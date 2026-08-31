@@ -93,6 +93,18 @@ class GmailClient:
         # the network or the filesystem.
         self._service = service
 
+    def token_file(self) -> Path:
+        """Where this client's token lives.
+
+        A hook, so a consumer whose own configuration predates gmailscan can
+        keep honouring it without every code path having to remember -- the
+        alternative is one of discovery, ``is_configured`` and credential
+        loading silently disagreeing about which file is authoritative.
+        """
+        from .auth import token_path
+
+        return token_path(self.account)
+
     @property
     def service(self) -> Any:
         if self._service is None:
@@ -104,7 +116,9 @@ class GmailClient:
                     "dependencies."
                 ) from exc
 
-            creds = self._credentials or load_credentials(self.account)
+            creds = self._credentials or load_credentials(
+                self.account, path=self.token_file()
+            )
             self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._service
 
