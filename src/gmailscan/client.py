@@ -56,13 +56,16 @@ class EmailMessage:
     :attr:`text_first` or :attr:`html_first`.
     """
 
+    # Only these four are always present. Everything below is optional because
+    # not every consumer threads, and a parser building a fixture by hand should
+    # not have to name fields it does not use.
     id: str
-    threadId: str
     subject: str
     sender: str
     date: str  # the Date header, e.g. "Mon, 24 Aug 2026 10:02:11 -0400"
-    text: str | None
-    html: str | None
+    text: str | None = None
+    html: str | None = None
+    threadId: str = ""
     to: str = ""  # needed so mail you sent names the other party, not you
     account: str = ""  # which mailbox this came from, once more than one is swept
 
