@@ -125,8 +125,12 @@ def persist_token(path: Path, json_text: str) -> None:
         )
 
 
-def load_credentials(account: str) -> Any:
+def load_credentials(account: str, *, path: Path | None = None) -> Any:
     """Usable credentials for ``account``, refreshing and writing back if needed.
+
+    ``path`` overrides where the token is read from, for a consumer that still
+    honours its own pre-gmailscan configuration. Without it, discovery is
+    :func:`token_path`.
 
     Every failure mode reports the fix, because the thing reading this is
     usually a log from a 3am timer with nobody watching.
@@ -139,7 +143,7 @@ def load_credentials(account: str) -> Any:
             "google-auth is not installed; install gmailscan's dependencies."
         ) from exc
 
-    path = token_path(account)
+    path = path or token_path(account)
     if not path.exists():
         raise GmailAuthRequired(f"No Gmail token for {account} at {path}. {SETUP_HINT}")
 
