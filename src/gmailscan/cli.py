@@ -29,6 +29,8 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from .auth import (
     SCOPES,
     SETUP_HINT,
@@ -38,6 +40,54 @@ from .auth import (
     token_dir,
     token_path,
 )
+
+
+GRANTED_SUFFIX = ".granted"
+
+
+def _granted_marker(path: Path) -> Path:
+    """Sidecar recording when a grant was made.
+
+    Not the token's mtime: ``persist_token`` rewrites the file on every access
+    token refresh, so mtime measures the last refresh and resets to today the
+    moment anything reads the mailbox. It would report "granted 0d ago" forever,
+    which is exactly the number you need to be right about.
+
+    Not a key inside the token JSON either: ``Credentials.to_json()`` serializes
+    only the fields it knows, so an extra key is dropped on the first refresh.
+    """
+    return path.with_suffix(path.suffix + GRANTED_SUFFIX)
+
+
+def _record_grant(path: Path) -> None:
+    try:
+        _granted_marker(path).write_text(
+            datetime.now(timezone.utc).isoformat(), encoding="utf-8"
+        )
+    except OSError:
+        pass  # a read-only store is not a reason to fail a consent that worked
+
+
+def _granted_age(path: Path) -> str:
+    """How old this grant is, which is the number that actually matters.
+
+    The credential's ``expiry`` is the *access* token -- about an hour out and
+    refreshed automatically on every use. Printing it next to OK invites the
+    reading that a grant is about to lapse when nothing is wrong.
+
+    What can lapse is the refresh token, and its lifetime appears nowhere in the
+    file. With the consent screen in Testing, Google kills it 7 days after
+    consent; published to Production it lives until revoked. So report the age
+    of the grant and let the 7-day mark speak for itself.
+    """
+    marker = _granted_marker(path)
+    try:
+        minted = datetime.fromisoformat(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return "granted date unknown (no .granted marker)"
+    days = (datetime.now(timezone.utc) - minted).days
+    note = "   <-- outlived Testing's 7 days" if days >= 7 else ""
+    return f"granted {days}d ago ({minted:%Y-%m-%d}){note}"
 
 
 def _status() -> int:
@@ -71,8 +121,9 @@ def _status() -> int:
             failures += 1
             continue
 
+        granted = _granted_age(path)
         if creds.valid:
-            print(f"  {account:28} OK          expires {creds.expiry}")
+            print(f"  {account:28} OK          {granted}")
             continue
         try:
             creds.refresh(Request())
@@ -83,7 +134,7 @@ def _status() -> int:
                 failures += 1
             continue
         persist_token(path, creds.to_json())
-        print(f"  {account:28} REFRESHED   expires {creds.expiry}")
+        print(f"  {account:28} REFRESHED   {granted}")
 
     if failures:
         print(f"\n{failures} account(s) need re-authorizing.")
@@ -158,6 +209,7 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     persist_token(path, creds.to_json())
+    _record_grant(path)
     print(f"\nAuthorized {account}; token written to {path}")
     return 0
 
