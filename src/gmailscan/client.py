@@ -15,6 +15,7 @@ dedupe; this layer reports what it finds.
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -28,6 +29,8 @@ from .auth import (
     authorized_accounts,
     load_credentials,
 )
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "EmailMessage",
@@ -194,9 +197,28 @@ def search_all(
 
     ``limit`` applies per mailbox, not in total, so adding an account never
     silently truncates the results from the ones already being read.
+
+    **A mailbox whose grant has died does not abort the others.** Tokens expire
+    per account -- with the consent screen in Testing they expire every 7 days,
+    and in practice one address goes stale while the other is fine. Aborting the
+    whole sweep on the first bad one means a dead mailbox blinds you to a
+    healthy one, so each failure is logged and skipped.
+
+    If *every* mailbox fails, that is raised: a sweep that reads nothing at all
+    must not look like a sweep that found nothing.
     """
-    for client in clients(accounts):
-        yield from client.search(query, after=after, limit=limit)
+    targets = clients(accounts)
+    failures: list[str] = []
+    for client in targets:
+        try:
+            yield from client.search(query, after=after, limit=limit)
+        except GmailAuthRequired as exc:
+            failures.append(client.account)
+            log.warning("skipping %s: %s", client.account, exc)
+    if failures and len(failures) == len(targets):
+        raise GmailAuthRequired(
+            f"Every mailbox failed to authorize ({', '.join(failures)}). {SETUP_HINT}"
+        )
 
 
 def decode_message(payload: dict[str, Any], *, account: str = "") -> EmailMessage:
