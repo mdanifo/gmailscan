@@ -1,0 +1,18 @@
+# Dependency version updates. Vulnerability alerts and automated security
+# fixes are enabled separately at the repo level and act immediately; this file
+# is the slower job of not drifting far enough behind that an advisory becomes
+# an upgrade project.
+#
+# Monthly and grouped on purpose: one batched PR per ecosystem per month is a
+# thing you actually review, where a weekly per-package trickle across a dozen
+# repos is a thing you learn to ignore.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      python-dependencies:
+        patterns: ["*"]
