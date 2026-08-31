@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gmailscan"
+version = "0.1.0"
+description = "Shared read-only Gmail access for personal projects"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "mdanifo" }]
+dependencies = [
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+]
+
+[project.optional-dependencies]
+# Only for the AWS Secrets Manager token store, which is how an unattended
+# Lambda gets a grant it cannot run a consent flow for. Filesystem callers do
+# not need boto3 and should not install it.
+secrets = ["boto3>=1.28"]
+# The consent flow. Needed once per account by `gmailscan-auth`, never by a
+# project that only reads mail, so it stays out of the runtime dependencies.
+auth = ["google-auth-oauthlib>=1.0"]
+dev = ["pytest>=7", "boto3>=1.28", "google-auth-oauthlib>=1.0"]
+
+[project.scripts]
+gmailscan-auth = "gmailscan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

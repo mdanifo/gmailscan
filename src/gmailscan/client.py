@@ -1,0 +1,245 @@
+"""Search and decode Gmail messages, read-only.
+
+Auth lives next door in :mod:`gmailscan.auth`; this module knows nothing about
+recruiters, shipments, or purchases. Parsing stays in the project that cares.
+
+:func:`clients` is the multi-account entry point -- one :class:`GmailClient` per
+authorized mailbox, which is what "scan mdanifo and mdanifo100" means in
+practice. A project that wants a single mailbox passes ``accounts=[...]`` or
+sets ``GMAILSCAN_ACCOUNTS``.
+
+Re-reading a message that exists in two mailboxes is the caller's problem to
+dedupe; this layer reports what it finds.
+"""
+
+from __future__ import annotations
+
+import base64
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+from .auth import (
+    GmailAuthRequired,
+    GmailUnavailable,
+    SETUP_HINT,
+    authorized_accounts,
+    load_credentials,
+)
+
+__all__ = [
+    "EmailMessage",
+    "GmailClient",
+    "clients",
+    "decode_message",
+]
+
+
+@dataclass(frozen=True)
+class EmailMessage:
+    """One decoded Gmail message.
+
+    There is deliberately **no** ``body`` property. The two projects this was
+    extracted from disagreed about what it means, and both were right for their
+    own mail: recruiter correspondence carries its detail in prose, so plain
+    text is the signal and the HTML twin is the same words wrapped in markup
+    that only costs tokens; order confirmations carry their detail in tables, so
+    the HTML is the signal and the text part is a lossy summary.
+
+    Silently picking one would have changed what a project reads without
+    changing a line of its code, so callers say which they want:
+    :attr:`text_first` or :attr:`html_first`.
+    """
+
+    id: str
+    threadId: str
+    subject: str
+    sender: str
+    date: str  # the Date header, e.g. "Mon, 24 Aug 2026 10:02:11 -0400"
+    text: str | None
+    html: str | None
+    to: str = ""  # needed so mail you sent names the other party, not you
+    account: str = ""  # which mailbox this came from, once more than one is swept
+
+    @property
+    def text_first(self) -> str:
+        """Plain text if present, else HTML, else empty."""
+        return self.text or self.html or ""
+
+    @property
+    def html_first(self) -> str:
+        """HTML if present, else plain text, else empty."""
+        return self.html or self.text or ""
+
+
+class GmailClient:
+    """Thin wrapper over the Gmail API v1 ``users.messages`` surface, one account."""
+
+    def __init__(
+        self,
+        account: str,
+        *,
+        credentials: Any = None,
+        service: Any = None,
+    ) -> None:
+        self.account = account.strip().lower()
+        self._credentials = credentials
+        # Built lazily so tests can inject a fake and construction never touches
+        # the network or the filesystem.
+        self._service = service
+
+    @property
+    def service(self) -> Any:
+        if self._service is None:
+            try:
+                from googleapiclient.discovery import build
+            except ImportError as exc:  # pragma: no cover - exercised by the import guard test
+                raise GmailUnavailable(
+                    "google-api-python-client is not installed; install gmailscan's "
+                    "dependencies."
+                ) from exc
+
+            creds = self._credentials or load_credentials(self.account)
+            self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        return self._service
+
+    def search(
+        self, query: str, *, after: date | None = None, limit: int = 200
+    ) -> Iterator[EmailMessage]:
+        """Yield decoded messages matching a Gmail search query.
+
+        ``limit`` is a hard stop rather than a page size: the first sweep of a
+        mailbox with years of history would otherwise walk all of it.
+        """
+        if after is not None:
+            query = f"{query} after:{after.strftime('%Y/%m/%d')}"
+
+        messages = self.service.users().messages()
+        page_token: str | None = None
+        fetched = 0
+        while fetched < limit:
+            response = messages.list(
+                userId="me", q=query, pageToken=page_token, maxResults=100
+            ).execute()
+            for stub in response.get("messages", []):
+                if fetched >= limit:
+                    break
+                payload = messages.get(userId="me", id=stub["id"], format="full").execute()
+                fetched += 1
+                yield decode_message(payload, account=self.account)
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                return
+
+    def get_thread(self, thread_id: str) -> list[EmailMessage]:
+        """Every message in a thread, oldest first as Gmail returns them.
+
+        Used to see who spoke last and to read next steps from the conversation
+        rather than from a single search hit.
+        """
+        if not thread_id:
+            return []
+        payload = (
+            self.service.users().threads().get(userId="me", id=thread_id, format="full").execute()
+        )
+        return [
+            decode_message(message, account=self.account)
+            for message in payload.get("messages") or []
+        ]
+
+    def raw(self, message_id: str) -> bytes:
+        """The full RFC 822 message, for dumping a fixture or debugging a parse."""
+        response = (
+            self.service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="raw")
+            .execute()
+        )
+        return _b64decode(str(response["raw"]))
+
+
+def clients(accounts: list[str] | None = None) -> list[GmailClient]:
+    """One ready client per mailbox: every authorized one, or just those asked for.
+
+    Raises :class:`GmailAuthRequired` when nothing is authorized, or when a
+    specifically requested account has no token -- asking for a mailbox and
+    silently getting nothing back is worse than an error.
+    """
+    available = authorized_accounts()
+    if accounts is None:
+        if not available:
+            raise GmailAuthRequired(f"No Gmail account is authorized here. {SETUP_HINT}")
+        return [GmailClient(a) for a in available]
+
+    wanted = [a.strip().lower() for a in accounts if a.strip()]
+    missing = [a for a in wanted if a not in available]
+    if missing:
+        raise GmailAuthRequired(
+            f"No Gmail token for: {', '.join(missing)}. "
+            f"Authorized here: {', '.join(available) or 'none'}. {SETUP_HINT}"
+        )
+    return [GmailClient(a) for a in wanted]
+
+
+def search_all(
+    query: str,
+    *,
+    accounts: list[str] | None = None,
+    after: date | None = None,
+    limit: int = 200,
+) -> Iterator[EmailMessage]:
+    """Run one query across every mailbox, tagging each hit with its account.
+
+    ``limit`` applies per mailbox, not in total, so adding an account never
+    silently truncates the results from the ones already being read.
+    """
+    for client in clients(accounts):
+        yield from client.search(query, after=after, limit=limit)
+
+
+def decode_message(payload: dict[str, Any], *, account: str = "") -> EmailMessage:
+    """Turn a ``users.messages.get(format="full")`` response into an EmailMessage."""
+    part = payload.get("payload") or {}
+    headers = {
+        str(h.get("name", "")).lower(): str(h.get("value", "")) for h in part.get("headers") or []
+    }
+    bodies: dict[str, str] = {}
+    _collect_bodies(part, bodies)
+    return EmailMessage(
+        id=str(payload.get("id", "")),
+        threadId=str(payload.get("threadId", "")),
+        subject=headers.get("subject", ""),
+        sender=headers.get("from", ""),
+        to=headers.get("to", ""),
+        date=headers.get("date", ""),
+        text=bodies.get("text/plain"),
+        html=bodies.get("text/html"),
+        account=account,
+    )
+
+
+def _collect_bodies(part: dict[str, Any], bodies: dict[str, str]) -> None:
+    """Walk the MIME tree depth-first, keeping the first body seen per type."""
+    mime = str(part.get("mimeType", ""))
+    data = (part.get("body") or {}).get("data")
+    if data and mime in ("text/plain", "text/html") and mime not in bodies:
+        bodies[mime] = _b64decode(str(data)).decode("utf-8", errors="replace")
+    for child in part.get("parts") or []:
+        _collect_bodies(child, bodies)
+
+
+def _b64decode(data: str) -> bytes:
+    """Gmail uses URL-safe base64, occasionally without padding."""
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+def dump_path(dump_dir: Path, source: str, account: str, message_id: str) -> Path:
+    """A stable filename for a dumped message, unique across mailboxes.
+
+    The account is in the name because the same message id can appear in two
+    mailboxes and one dump must not overwrite the other.
+    """
+    safe_account = account.replace("@", "_at_").replace("/", "_")
+    return dump_dir / f"{source}-{safe_account}-{message_id}.eml"
