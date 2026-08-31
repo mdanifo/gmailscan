@@ -256,3 +256,53 @@ def test_dump_path_is_unique_per_mailbox():
     b = dump_path(Path("/d"), "amazon", "mdanifo100@gmail.com", "m1")
     assert a != b
     assert "@" not in a.name  # safe on every filesystem
+
+
+# ------------------------------------------------- one dead mailbox of several
+
+
+def _dead(account):
+    def _raise(self, *a, **k):
+        raise GmailAuthRequired(f"refresh for {account} failed (invalid_grant)")
+
+    return _raise
+
+
+def test_a_dead_mailbox_does_not_blind_the_healthy_one(monkeypatch, tmp_path, caplog):
+    """Tokens expire per account. With the consent screen in Testing they expire
+    every 7 days, and in practice one address goes stale while the other is
+    fine -- which is the live situation this was written in. Aborting the sweep
+    on the first bad mailbox would hide the good one's mail entirely.
+    """
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "alive@gmail.com")
+    _write_token(tmp_path, "dead@gmail.com")
+
+    real_search = GmailClient.search
+
+    def search(self, query, **kw):
+        if self.account == "dead@gmail.com":
+            raise GmailAuthRequired("refresh failed (invalid_grant)")
+        self._service = _FakeService([_payload()])
+        return real_search(self, query, **kw)
+
+    monkeypatch.setattr(GmailClient, "search", search)
+
+    found = list(search_all("x"))
+    assert [m.account for m in found] == ["alive@gmail.com"]
+    assert "dead@gmail.com" in caplog.text
+
+
+def test_every_mailbox_failing_still_raises(monkeypatch, tmp_path):
+    """A sweep that read nothing at all must not look like one that found nothing."""
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    _write_token(tmp_path, "b@gmail.com")
+
+    def always_dead(self, query, **kw):
+        raise GmailAuthRequired("refresh failed (invalid_grant)")
+
+    monkeypatch.setattr(GmailClient, "search", always_dead)
+
+    with pytest.raises(GmailAuthRequired, match="Every mailbox"):
+        list(search_all("x"))
