@@ -143,7 +143,7 @@ def test_no_ambiguous_body_attribute():
     preferred HTML (order tables). Shipping either as `body` would silently
     change what one of them reads, so neither is shipped.
     """
-    assert not hasattr(EmailMessage(*["x"] * 5, None, None), "body")
+    assert not hasattr(EmailMessage(id="1", subject="s", sender="f", date="d"), "body")
 
 
 def test_text_first_and_html_first_are_explicit():
