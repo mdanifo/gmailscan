@@ -126,3 +126,43 @@ def test_persist_token_survives_a_read_only_store(monkeypatch, tmp_path, caplog)
     monkeypatch.setattr("pathlib.Path.write_text", boom)
     auth.persist_token(path, "{}")  # must not raise
     assert "could not persist" in caplog.text.lower()
+
+
+# ------------------------------------------------------- grant-age reporting
+
+
+def test_granted_marker_is_not_mistaken_for_an_account(monkeypatch, tmp_path):
+    """The sidecar sits next to the token in the same directory."""
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    (tmp_path / "token-a@gmail.com.json.granted").write_text("2026-08-31T00:00:00+00:00")
+    assert auth.authorized_accounts() == ["a@gmail.com"]
+
+
+def test_grant_age_does_not_come_from_the_token_mtime(monkeypatch, tmp_path):
+    """persist_token rewrites the token on every access-token refresh, so mtime
+    resets to today the moment anything reads the mailbox -- it would report
+    "granted 0d ago" forever, which is the one number this has to get right."""
+    from datetime import datetime, timedelta, timezone
+
+    from gmailscan import cli
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    path = _write_token(tmp_path, "a@gmail.com")
+    long_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    cli._granted_marker(path).write_text(long_ago.isoformat())
+
+    # Simulate a refresh: the token file is rewritten right now.
+    auth.persist_token(path, '{"refresh_token": "r"}')
+
+    reported = cli._granted_age(path)
+    assert "30d ago" in reported
+    assert "outlived" in reported  # past 7 days, so the app is published
+
+
+def test_grant_age_says_so_when_unknown(monkeypatch, tmp_path):
+    from gmailscan import cli
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    path = _write_token(tmp_path, "a@gmail.com")
+    assert "unknown" in cli._granted_age(path)
