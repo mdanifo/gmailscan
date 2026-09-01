@@ -166,3 +166,13 @@ def test_grant_age_says_so_when_unknown(monkeypatch, tmp_path):
     monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
     path = _write_token(tmp_path, "a@gmail.com")
     assert "unknown" in cli._granted_age(path)
+
+
+def test_declared_version_matches_the_package_metadata():
+    """The tag, pyproject and __version__ drifted: tags reached v0.1.4 while both
+    still said 0.1.0, so an image reported a version that never existed."""
+    from importlib.metadata import version
+
+    import gmailscan
+
+    assert version("gmailscan") == gmailscan.__version__
