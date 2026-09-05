@@ -199,17 +199,22 @@ class GmailClient:
         return _b64decode(str(response["raw"]))
 
 
-def _with_backoff(request: Any, *, attempts: int = 6) -> Any:
+def _with_backoff(request: Any, *, attempts: int = 9) -> Any:
     """Execute a Gmail request, waiting out the per-minute quota.
 
-    Gmail meters by "query cost" per user per minute, and a survey of a large
-    mailbox reaches that in seconds -- a 403 whose reason is rateLimitExceeded,
-    not a permissions problem, and one that clears on its own. Retrying with
-    backoff turns it into a pause; not retrying turns a five-minute job into a
-    crash three thousand messages in.
+    Gmail meters by "query cost" per user per MINUTE. That word is the whole
+    design constraint: a backoff that gives up inside sixty seconds cannot
+    outlast the window it is waiting on. The first version topped out at ~14s
+    after six tries -- about 26s in total -- and died mid-scan with the quota
+    about to reset.
 
-    Only rate-limit and transient server errors are retried. A real 403 (revoked
-    grant, wrong scope) must surface immediately rather than after six sleeps.
+    So: nine attempts, capped at 90s each. Worst case is several minutes of
+    sleeping, which is the correct behaviour for a survey that would otherwise
+    have to start over.
+
+    Only rate-limit and transient server errors are retried. A real 403 --
+    revoked grant, wrong scope -- surfaces immediately rather than after nine
+    sleeps, because that error never clears on its own.
     """
     import random
     import time
@@ -227,10 +232,23 @@ def _with_backoff(request: Any, *, attempts: int = 6) -> Any:
             )
             if not transient or attempt == attempts - 1:
                 raise
-            # Full jitter: several workers backing off in lockstep would
+
+            # Google sometimes says exactly how long to wait. Believe it over
+            # a guess, clamped so a bad header cannot stall the run for hours.
+            retry_after = None
+            try:
+                raw = exc.resp.get("retry-after") if hasattr(exc.resp, "get") else None
+                retry_after = min(120.0, float(raw)) if raw else None
+            except (TypeError, ValueError):
+                retry_after = None
+
+            # Full jitter: several callers backing off in lockstep would
             # otherwise retry in lockstep and re-trip the same limit.
-            delay = min(60.0, 2.0**attempt) * (0.5 + random.random() / 2)
-            log.warning("Gmail rate limit; retrying in %.1fs", delay)
+            delay = retry_after or min(90.0, 2.0**attempt) * (0.5 + random.random() / 2)
+            log.warning(
+                "Gmail rate limit (attempt %d/%d); retrying in %.1fs",
+                attempt + 1, attempts, delay,
+            )
             time.sleep(delay)
     raise RuntimeError("unreachable")
 
