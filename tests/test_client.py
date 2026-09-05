@@ -306,3 +306,91 @@ def test_every_mailbox_failing_still_raises(monkeypatch, tmp_path):
 
     with pytest.raises(GmailAuthRequired, match="Every mailbox"):
         list(search_all("x"))
+
+
+# --------------------------------------------- quota: metadata and backoff
+
+
+def test_headers_only_asks_gmail_for_metadata(monkeypatch):
+    """Surveying a mailbox must not download years of bodies to read one header
+    off each -- that is what exhausted the per-minute quota."""
+    captured = {}
+
+    class _Recording(_FakeMessages):
+        def get(self, **kw):
+            captured.update(kw)
+            return _FakeExec(_payload())
+
+    service = _FakeService([_payload()])
+    service._messages = _Recording([_payload()])
+    client = GmailClient("a@gmail.com", service=service)
+    list(client.search("x", headers_only=True))
+
+    assert captured["format"] == "metadata"
+    assert "From" in captured["metadataHeaders"]
+
+
+def test_full_fetch_is_still_the_default():
+    """headers_only leaves text and html None, so parsing callers must opt out
+    of it rather than into it."""
+    captured = {}
+
+    class _Recording(_FakeMessages):
+        def get(self, **kw):
+            captured.update(kw)
+            return _FakeExec(_payload())
+
+    service = _FakeService([_payload()])
+    service._messages = _Recording([_payload()])
+    list(GmailClient("a@gmail.com", service=service).search("x"))
+    assert captured["format"] == "full"
+
+
+def test_rate_limit_is_retried_not_raised(monkeypatch):
+    """Gmail meters by query cost per user per minute and a survey reaches it in
+    seconds. The 403 says rateLimitExceeded and clears on its own."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    class _Resp:
+        status = 403
+        reason = "Forbidden"
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise HttpError(_Resp(), b'{"error":{"message":"rateLimitExceeded"}}')
+            return {"ok": True}
+
+    assert client_mod._with_backoff(_Req()) == {"ok": True}
+    assert calls["n"] == 3
+
+
+def test_a_real_permission_error_is_not_retried(monkeypatch):
+    """A revoked grant must surface at once, not after six sleeps."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    class _Resp:
+        status = 403
+        reason = "Forbidden"
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            raise HttpError(_Resp(), b'{"error":{"message":"insufficientPermissions"}}')
+
+    with pytest.raises(HttpError):
+        client_mod._with_backoff(_Req())
+    assert calls["n"] == 1

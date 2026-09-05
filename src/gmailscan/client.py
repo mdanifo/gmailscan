@@ -126,27 +126,46 @@ class GmailClient:
         return self._service
 
     def search(
-        self, query: str, *, after: date | None = None, limit: int = 200
+        self,
+        query: str,
+        *,
+        after: date | None = None,
+        limit: int = 200,
+        headers_only: bool = False,
     ) -> Iterator[EmailMessage]:
         """Yield decoded messages matching a Gmail search query.
 
         ``limit`` is a hard stop rather than a page size: the first sweep of a
         mailbox with years of history would otherwise walk all of it.
+
+        ``headers_only`` fetches ``format=metadata`` -- sender, subject, date
+        and nothing else. Anything surveying a mailbox rather than parsing it
+        wants this: full bodies of years of mail cost quota and bandwidth to
+        download megabytes and then read one header off each. ``text`` and
+        ``html`` come back None, which is why it is not the default.
         """
         if after is not None:
             query = f"{query} after:{after.strftime('%Y/%m/%d')}"
+
+        fmt = "metadata" if headers_only else "full"
+        extra = (
+            {"metadataHeaders": ["From", "To", "Subject", "Date"]}
+            if headers_only else {}
+        )
 
         messages = self.service.users().messages()
         page_token: str | None = None
         fetched = 0
         while fetched < limit:
-            response = messages.list(
-                userId="me", q=query, pageToken=page_token, maxResults=100
-            ).execute()
+            response = _with_backoff(
+                messages.list(userId="me", q=query, pageToken=page_token, maxResults=100)
+            )
             for stub in response.get("messages", []):
                 if fetched >= limit:
                     break
-                payload = messages.get(userId="me", id=stub["id"], format="full").execute()
+                payload = _with_backoff(
+                    messages.get(userId="me", id=stub["id"], format=fmt, **extra)
+                )
                 fetched += 1
                 yield decode_message(payload, account=self.account)
             page_token = response.get("nextPageToken")
@@ -180,6 +199,42 @@ class GmailClient:
         return _b64decode(str(response["raw"]))
 
 
+def _with_backoff(request: Any, *, attempts: int = 6) -> Any:
+    """Execute a Gmail request, waiting out the per-minute quota.
+
+    Gmail meters by "query cost" per user per minute, and a survey of a large
+    mailbox reaches that in seconds -- a 403 whose reason is rateLimitExceeded,
+    not a permissions problem, and one that clears on its own. Retrying with
+    backoff turns it into a pause; not retrying turns a five-minute job into a
+    crash three thousand messages in.
+
+    Only rate-limit and transient server errors are retried. A real 403 (revoked
+    grant, wrong scope) must surface immediately rather than after six sleeps.
+    """
+    import random
+    import time
+
+    from googleapiclient.errors import HttpError
+
+    for attempt in range(attempts):
+        try:
+            return request.execute()
+        except HttpError as exc:
+            status = getattr(exc.resp, "status", None)
+            detail = str(exc)
+            transient = status in (429, 500, 502, 503, 504) or (
+                status == 403 and ("rateLimit" in detail or "quotaExceeded" in detail)
+            )
+            if not transient or attempt == attempts - 1:
+                raise
+            # Full jitter: several workers backing off in lockstep would
+            # otherwise retry in lockstep and re-trip the same limit.
+            delay = min(60.0, 2.0**attempt) * (0.5 + random.random() / 2)
+            log.warning("Gmail rate limit; retrying in %.1fs", delay)
+            time.sleep(delay)
+    raise RuntimeError("unreachable")
+
+
 def clients(accounts: list[str] | None = None) -> list[GmailClient]:
     """One ready client per mailbox: every authorized one, or just those asked for.
 
@@ -209,6 +264,7 @@ def search_all(
     accounts: list[str] | None = None,
     after: date | None = None,
     limit: int = 200,
+    headers_only: bool = False,
 ) -> Iterator[EmailMessage]:
     """Run one query across every mailbox, tagging each hit with its account.
 
@@ -228,7 +284,9 @@ def search_all(
     failures: list[str] = []
     for client in targets:
         try:
-            yield from client.search(query, after=after, limit=limit)
+            yield from client.search(
+                query, after=after, limit=limit, headers_only=headers_only
+            )
         except GmailAuthRequired as exc:
             failures.append(client.account)
             log.warning("skipping %s: %s", client.account, exc)
