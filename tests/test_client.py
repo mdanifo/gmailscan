@@ -394,3 +394,61 @@ def test_a_real_permission_error_is_not_retried(monkeypatch):
     with pytest.raises(HttpError):
         client_mod._with_backoff(_Req())
     assert calls["n"] == 1
+
+
+def test_backoff_can_outlast_a_one_minute_quota_window(monkeypatch):
+    """Gmail meters per MINUTE. A backoff that gives up inside sixty seconds
+    cannot outlast the window it is waiting on -- the first version topped out
+    at ~14s after six tries and died mid-scan with the quota about to reset."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    class _Resp:
+        status = 403
+        reason = "Forbidden"
+
+        def get(self, _k):
+            return None
+
+    class _Req:
+        def execute(self):
+            raise HttpError(_Resp(), b'{"error":{"message":"rateLimitExceeded"}}')
+
+    with pytest.raises(HttpError):
+        client_mod._with_backoff(_Req())
+
+    assert sum(slept) > 60, f"gives up after only {sum(slept):.0f}s of waiting"
+
+
+def test_backoff_obeys_retry_after_when_google_sends_one(monkeypatch):
+    """Believe the server over a guess -- clamped, so a bad header cannot
+    stall a run for hours."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+        def get(self, key):
+            return "7" if key == "retry-after" else None
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise HttpError(_Resp(), b"{}")
+            return {"ok": True}
+
+    assert client_mod._with_backoff(_Req()) == {"ok": True}
+    assert slept == [7.0]
