@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gmailscan"
-version = "0.1.5"
+version = "0.2.0"
 description = "Shared read-only Gmail access for personal projects"
 readme = "README.md"
 requires-python = ">=3.10"
