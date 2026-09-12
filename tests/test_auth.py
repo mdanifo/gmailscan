@@ -176,3 +176,13 @@ def test_declared_version_matches_the_package_metadata():
     import gmailscan
 
     assert version("gmailscan") == gmailscan.__version__
+
+
+def test_the_readme_tells_cli_users_to_take_both_extras():
+    """The extras are split so a library consumer stays lean, but the CLI needs
+    both: --account uses auth, --push uses secrets. Installing one leaves the
+    other failing weeks later, at the moment you reach for it."""
+    from pathlib import Path
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    assert "gmailscan[auth,secrets]" in readme
