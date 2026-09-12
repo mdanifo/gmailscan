@@ -19,10 +19,18 @@ pip install "gmailscan @ git+https://github.com/mdanifo/gmailscan"
 pip install "gmailscan[secrets] @ git+https://github.com/mdanifo/gmailscan"
 # running the consent flow on this machine:
 pip install "gmailscan[auth] @ git+https://github.com/mdanifo/gmailscan"
+# running gmailscan-auth yourself: you want BOTH, or --push fails at the
+# point of use with "needs the secrets extra" long after install
+pip install "gmailscan[auth,secrets] @ git+https://github.com/mdanifo/gmailscan"
 ```
 
 `boto3` is only needed for the AWS token store and `google-auth-oauthlib` only
 for the consent flow — a project that just reads mail needs neither.
+
+**Installing the CLI, though, take `[auth,secrets]`.** The extras are split so a
+library consumer stays lean, but `gmailscan-auth` uses both: `--account` needs
+`auth`, `--push` needs `secrets`. Installing one leaves the other failing weeks
+later at the moment you reach for it, with the install long forgotten.
 
 ## Scope
 
