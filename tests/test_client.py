@@ -190,6 +190,17 @@ def test_search_limit_is_a_hard_stop():
     assert len(list(client.search("x", limit=3))) == 3
 
 
+def test_a_client_logs_which_gmailscan_it_is(caplog):
+    """jobpipe ran v0.1.3 through five releases and no log line said so."""
+    import logging
+
+    import gmailscan
+
+    caplog.set_level(logging.INFO, logger="gmailscan.client")
+    GmailClient("A@gmail.com", service=_FakeService([]))
+    assert f"gmailscan {gmailscan.__version__} reading a@gmail.com" in caplog.text
+
+
 def test_raw_returns_rfc822_bytes():
     client = GmailClient("a@gmail.com", service=_FakeService([_payload()]))
     assert b"From: a@b" in client.raw("m1")
