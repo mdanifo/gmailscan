@@ -180,8 +180,8 @@ class GmailClient:
         """
         if not thread_id:
             return []
-        payload = (
-            self.service.users().threads().get(userId="me", id=thread_id, format="full").execute()
+        payload = _with_backoff(
+            self.service.users().threads().get(userId="me", id=thread_id, format="full")
         )
         return [
             decode_message(message, account=self.account)
@@ -190,11 +190,8 @@ class GmailClient:
 
     def raw(self, message_id: str) -> bytes:
         """The full RFC 822 message, for dumping a fixture or debugging a parse."""
-        response = (
-            self.service.users()
-            .messages()
-            .get(userId="me", id=message_id, format="raw")
-            .execute()
+        response = _with_backoff(
+            self.service.users().messages().get(userId="me", id=message_id, format="raw")
         )
         return _b64decode(str(response["raw"]))
 
