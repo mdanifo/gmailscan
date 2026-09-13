@@ -314,3 +314,16 @@ def test_the_readme_tells_cli_users_to_take_both_extras():
 
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
     assert "gmailscan[auth,secrets]" in readme
+
+
+def test_the_readme_pin_example_names_the_current_release():
+    """The README tells consumers which tag to pin and what their log line will
+    say. Left at an old version, it steers every new consumer onto stale code --
+    the exact failure the pin advice is there to prevent."""
+    from pathlib import Path
+
+    import gmailscan
+
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
+    assert f"gmailscan@v{gmailscan.__version__}" in readme
+    assert f"gmailscan {gmailscan.__version__} reading" in readme
