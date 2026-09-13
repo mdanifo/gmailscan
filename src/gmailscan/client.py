@@ -153,9 +153,11 @@ class GmailClient:
 
         ``headers_only`` fetches ``format=metadata`` -- sender, subject, date
         and nothing else. Anything surveying a mailbox rather than parsing it
-        wants this: full bodies of years of mail cost quota and bandwidth to
-        download megabytes and then read one header off each. ``text`` and
-        ``html`` come back None, which is why it is not the default.
+        wants this: full bodies of years of mail are megabytes downloaded to
+        read one header off each. It saves bandwidth, not quota -- Gmail
+        charges a metadata get the same 20 units as a full one (see the README's
+        Quota section). ``text`` and ``html`` come back None, which is why it is
+        not the default.
         """
         if after is not None:
             query = f"{query} after:{after.strftime('%Y/%m/%d')}"
