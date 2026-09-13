@@ -25,8 +25,10 @@ from typing import Any
 from .auth import (
     GmailAuthRequired,
     GmailUnavailable,
+    Health,
     SETUP_HINT,
     authorized_accounts,
+    health,
     load_credentials,
 )
 
@@ -107,6 +109,10 @@ class GmailClient:
         from .auth import token_path
 
         return token_path(self.account)
+
+    def health(self) -> Health:
+        """:func:`gmailscan.auth.health` for this mailbox, via :meth:`token_file`."""
+        return health(self.account, path=self.token_file())
 
     @property
     def service(self) -> Any:
