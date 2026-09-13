@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 log = logging.getLogger(__name__)
 
@@ -104,6 +104,65 @@ def is_configured(account: str | None = None) -> bool:
     if account:
         return token_path(account).exists()
     return bool(authorized_accounts())
+
+
+Health = Literal["missing", "configured", "expired", "revoked", "ok"]
+
+
+def health(account: str, *, path: Path | None = None) -> Health:
+    """Whether ``account``'s grant actually works, refreshing it to find out.
+
+    :func:`is_configured` checks that a token file exists, and a revoked grant
+    leaves its file behind -- so it goes on answering True for a mailbox that
+    reads nothing, and a sweep that cannot read looks like one that found
+    nothing. It stays a file check, because callers rely on it never touching
+    the network. This is the check that does.
+
+    - ``"missing"`` -- no token file.
+    - ``"configured"`` -- a token exists but its health could not be checked:
+      the Google libraries are not installed, or the refresh failed for a
+      reason that says nothing about the grant (network down, a retryable
+      server error). The same thing ``is_configured`` knows, and no more.
+    - ``"expired"`` -- the file cannot renew itself: no refresh token, or not
+      an authorized-user file at all. Dead now, or within the hour.
+    - ``"revoked"`` -- Google refused the refresh. Revocation and a Testing-mode
+      grant past its 7 days come back as the same ``invalid_grant``, so this
+      does not pretend to tell them apart.
+    - ``"ok"`` -- usable now. A refreshed token is written back, exactly as
+      :func:`load_credentials` would.
+
+    Never raises. ``path`` overrides discovery, as for :func:`load_credentials`.
+    """
+    path = path or token_path(account)
+    if not path.exists():
+        return "missing"
+    try:
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+    except ImportError:
+        return "configured"
+
+    try:
+        creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call, unused-ignore]
+            str(path), list(SCOPES)
+        )
+    except ValueError:
+        return "expired"
+    except OSError:
+        return "configured"  # there, but not readable by this process
+    if not creds.refresh_token:
+        return "expired"
+    if creds.valid:
+        return "ok"
+    try:
+        creds.refresh(Request())
+    except RefreshError as exc:
+        return "configured" if getattr(exc, "retryable", False) else "revoked"
+    except Exception:
+        return "configured"
+    persist_token(path, creds.to_json())
+    return "ok"
 
 
 def persist_token(path: Path, json_text: str) -> None:

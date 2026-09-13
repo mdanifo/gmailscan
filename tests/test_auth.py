@@ -116,6 +116,134 @@ def test_setup_hint_explains_the_seven_day_expiry():
     assert "Testing" in auth.SETUP_HINT
 
 
+def _authorized_user(directory, account, *, expiry, **overrides):
+    """A token file google-auth will actually parse, unlike the stubs above."""
+    doc = {
+        "token": "access",
+        "refresh_token": "refresh",
+        "client_id": "c",
+        "client_secret": "s",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "expiry": expiry,
+        **overrides,
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"token-{account}.json"
+    path.write_text(json.dumps({k: v for k, v in doc.items() if v is not None}))
+    return path
+
+
+FUTURE = "2099-01-01T00:00:00Z"
+PAST = "2020-01-01T00:00:00Z"
+
+
+def test_health_reports_a_missing_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    assert auth.health("nobody@gmail.com") == "missing"
+
+
+def test_health_reports_a_live_token_ok_without_a_refresh(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE)
+
+    def no_network(*_a, **_k):
+        raise AssertionError("a valid access token needs no refresh")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", no_network)
+    assert auth.health("a@gmail.com") == "ok"
+
+
+def test_a_revoked_grant_is_revoked_while_is_configured_still_says_yes(monkeypatch, tmp_path):
+    """The whole reason this exists: the file outlives the grant, so a file
+    check reports healthy for a mailbox that can no longer be read."""
+    from google.auth.exceptions import RefreshError
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=PAST)
+
+    def refused(*_a, **_k):
+        raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", refused)
+    assert auth.health("a@gmail.com") == "revoked"
+    assert auth.is_configured("a@gmail.com") is True  # unchanged, on purpose
+
+
+def test_an_unreachable_google_is_not_a_verdict_on_the_grant(monkeypatch, tmp_path):
+    """A laptop with no network must not be told to re-authorize."""
+    from google.auth.exceptions import RefreshError, TransportError
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=PAST)
+
+    def offline(*_a, **_k):
+        raise TransportError("Connection refused")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", offline)
+    assert auth.health("a@gmail.com") == "configured"
+
+    def busy(*_a, **_k):
+        raise RefreshError("internal_failure", retryable=True)
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", busy)
+    assert auth.health("a@gmail.com") == "configured"
+
+
+def test_health_never_raises_on_an_unreadable_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE)
+
+    def denied(*_a, **_k):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(
+        "google.oauth2.credentials.Credentials.from_authorized_user_file", denied
+    )
+    assert auth.health("a@gmail.com") == "configured"
+
+
+def test_a_token_that_cannot_renew_itself_is_expired(monkeypatch, tmp_path):
+    """An access token alone works for an hour, then dies inside a timer --
+    so it is expired even while it still works, not ok until it stops."""
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE, refresh_token=None)
+    assert auth.health("a@gmail.com") == "expired"
+
+    _authorized_user(tmp_path, "b@gmail.com", expiry=FUTURE, refresh_token="")
+    assert auth.health("b@gmail.com") == "expired"
+
+
+def test_health_writes_back_what_it_refreshed(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    path = _authorized_user(tmp_path, "a@gmail.com", expiry=PAST)
+
+    def refreshed(self, _request):
+        self.token = "fresh"
+        self.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", refreshed)
+    assert auth.health("a@gmail.com") == "ok"
+    assert json.loads(path.read_text())["token"] == "fresh"
+
+
+def test_client_health_checks_the_file_the_client_would_read(monkeypatch, tmp_path):
+    """A consumer that overrides token_file() must not have health() look
+    somewhere else -- the same disagreement token_file() exists to prevent."""
+    from gmailscan import GmailClient
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path / "discovered"))
+    legacy = _authorized_user(tmp_path / "legacy", "a@gmail.com", expiry=FUTURE)
+
+    class _Legacy(GmailClient):
+        def token_file(self):
+            return legacy
+
+    assert auth.health("a@gmail.com") == "missing"
+    assert _Legacy("a@gmail.com").health() == "ok"
+
+
 def test_persist_token_survives_a_read_only_store(monkeypatch, tmp_path, caplog):
     """A read-only mount must not fail the run; the credential still works."""
     path = tmp_path / "ro" / "token.json"
