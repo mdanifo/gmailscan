@@ -32,6 +32,41 @@ library consumer stays lean, but `gmailscan-auth` uses both: `--account` needs
 `auth`, `--push` needs `secrets`. Installing one leaves the other failing weeks
 later at the moment you reach for it, with the install long forgotten.
 
+A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.3.0`,
+and read [CHANGELOG.md](CHANGELOG.md) before deciding a bump can wait.
+
+### Check the pin in your own tests
+
+A pin protects you from surprises and from fixes alike. jobpipe sat on v0.1.3
+through five releases, including the one that fixed its own four-day Gmail
+outage, and nothing said so. Copy this into the consumer's suite, pointed at
+whichever file holds the pin:
+
+```python
+def test_the_gmailscan_pin_is_what_is_installed():
+    import re
+    from pathlib import Path
+
+    import gmailscan
+
+    pins = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    pinned = re.search(r"gmailscan@v(\d+\.\d+\.\d+)", pins)
+    assert pinned, "no gmailscan@vX.Y.Z pin found"
+    assert gmailscan.__version__ == pinned.group(1), (
+        f"installed gmailscan {gmailscan.__version__}, pinned {pinned.group(1)}: "
+        "reinstall, or bump the pin"
+    )
+```
+
+It fails when the pin and the environment disagree (the pin bumped and the venv
+never reinstalled, or the reverse), so old shared code fails your tests instead
+of your sweep. It cannot tell you the pin itself has fallen behind. The
+CHANGELOG can, and so can the line every client logs when it is built:
+`gmailscan 0.3.0 reading <address>`.
+
+`__version__` has matched the tag since v0.1.5. Earlier tags all report `0.1.0`,
+so this check means nothing below v0.1.5.
+
 ## Scope
 
 `gmail.readonly` and nothing else. This package can search and read mail; it
@@ -63,6 +98,69 @@ so the HTML is the signal and the text part is a lossy summary.
 
 Shipping either as `body` would have silently changed what one project reads
 without changing a line of its code, so callers say which they want.
+
+### Is the grant alive?
+
+`is_configured()` checks that a token file exists. A revoked grant leaves its
+file behind, so it keeps answering `True` for a mailbox that can no longer be
+read. It stays a file check because callers rely on it never touching the
+network. `health()` refreshes to find out:
+
+```python
+from gmailscan import health
+
+health("mdanifo@gmail.com")  # "ok", "revoked", "expired", "configured" or "missing"
+```
+
+`revoked` covers Testing-mode expiry too; Google reports both as
+`invalid_grant`. `configured` means a token exists and nothing more could be
+learned, such as with no network. It is not a reason to re-authorize. A
+consumer that overrides `GmailClient.token_file()` should call `client.health()`
+so the check reads the file the client would.
+
+## Quota
+
+Gmail meters **quota units per user per minute**: 6,000 for each mailbox, per
+Google Cloud project
+([Google's table](https://developers.google.com/workspace/gmail/api/reference/quota),
+as of September 2026). What this package spends:
+
+| call            | units | made by                                     |
+| --------------- | ----- | ------------------------------------------- |
+| `messages.list` | 5     | `search()`, once per 100 hits               |
+| `messages.get`  | 20    | `search()`, once per message; `raw()`       |
+| `threads.get`   | 40    | `get_thread()`                              |
+
+So one mailbox yields at most **300 messages a minute**, and fetching them one
+at a time already runs a little faster than that (about 330 a minute,
+measured). A sweep of more than a few hundred messages will be refused partway
+through, and that is expected rather than an error. The refusal clears when the
+minute turns over, and every request waits it out: up to nine attempts, each
+wait capped at 90 seconds, `Retry-After` honoured when Google sends one. A
+backoff that gives up inside sixty seconds gives up just before the window
+resets, which is what v0.2.0's did. A real 403 (revoked grant, wrong scope) is
+never retried.
+
+Sizing a sweep:
+
+- `search(limit=200)` costs about 4,000 units, two-thirds of a minute on its
+  own. `limit` is per mailbox and a hard stop.
+- `after=` narrows the query on Google's side and is the cheapest saving there
+  is: sweep since the last run, not over a fixed window.
+- `headers_only=True` saves bandwidth, not quota. A metadata get costs the same
+  20 units as a full one; it downloads kilobytes instead of megabytes.
+- A thread read costs two message reads. Reading every thread a search turned
+  up triples the bill for those messages.
+- Every project here reads through the same OAuth client, so they share each
+  mailbox's 6,000. Two jobs reading one mailbox in the same minute split it,
+  and both wait longer.
+
+**Why messages are not batched.** Measured 2026-09-13: batching `messages.get`
+is 3 to 10 times faster, but batches of 50 to 100 had up to a third of their
+calls refused for rate limiting, each of which needs its own retry. Google counts
+a batch of n calls as n calls, so batching cannot lift the 300-a-minute ceiling;
+it only reaches it sooner. No consumer here is waiting on fetch latency, so
+requests stay one at a time.
 
 ## Where tokens live
 
