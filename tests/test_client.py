@@ -452,3 +452,74 @@ def test_backoff_obeys_retry_after_when_google_sends_one(monkeypatch):
 
     assert client_mod._with_backoff(_Req()) == {"ok": True}
     assert slept == [7.0]
+
+
+# ------------------------------------- every request rides out the quota
+
+
+class _RateLimitedOnce:
+    """A request Gmail refuses once for quota, then serves."""
+
+    def __init__(self, value):
+        self._value = value
+        self.calls = 0
+
+    def execute(self):
+        from googleapiclient.errors import HttpError
+
+        class _Resp:
+            status = 429
+            reason = "Too Many Requests"
+
+        self.calls += 1
+        if self.calls == 1:
+            raise HttpError(_Resp(), b'{"error":{"message":"rateLimitExceeded"}}')
+        return self._value
+
+
+def test_get_thread_rides_out_a_rate_limit(monkeypatch):
+    """The outreach sync reads whole threads. v0.2.1 retried search() but called
+    threads.get bare, so the 2026-09-13 sweep lost ~6 thread reads to the same
+    per-minute quota that search() rode straight through."""
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    request = _RateLimitedOnce({"messages": [_payload("m1"), _payload("m2")]})
+
+    class _Threads:
+        def get(self, *, userId, id, format):  # noqa: A002 - mirrors the Google signature
+            return request
+
+    service = _FakeService([])
+    service.threads = lambda: _Threads()
+    thread = GmailClient("a@gmail.com", service=service).get_thread("t1")
+
+    assert [m.id for m in thread] == ["m1", "m2"]
+    assert request.calls == 2
+
+
+def test_raw_rides_out_a_rate_limit(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    request = _RateLimitedOnce({"raw": _b64("From: a@b\r\n\r\nbody")})
+
+    class _Messages(_FakeMessages):
+        def get(self, **_kw):
+            return request
+
+    service = _FakeService([])
+    service._messages = _Messages([])
+
+    assert b"From: a@b" in GmailClient("a@gmail.com", service=service).raw("m1")
+    assert request.calls == 2
+
+
+def test_no_request_bypasses_the_backoff():
+    """search() got the backoff and the two methods beside it did not, which is
+    how a quota refusal kept costing thread reads on the version that fixed it.
+    The next method added here must not repeat that: _with_backoff is the only
+    place a Gmail request may be executed."""
+    import inspect
+
+    from gmailscan import client as client_mod
+
+    source = inspect.getsource(client_mod)
+    backoff = inspect.getsource(client_mod._with_backoff)
+    assert source.count(".execute()") == backoff.count(".execute()") == 1
