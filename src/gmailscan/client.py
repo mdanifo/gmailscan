@@ -98,6 +98,13 @@ class GmailClient:
         # the network or the filesystem.
         self._service = service
 
+        # A consumer can run shared code five releases old without anything
+        # saying so. One line in its own logs makes a stale pin visible the day
+        # it matters, rather than in the post-mortem.
+        from . import __version__
+
+        log.info("gmailscan %s reading %s", __version__, self.account)
+
     def token_file(self) -> Path:
         """Where this client's token lives.
 
