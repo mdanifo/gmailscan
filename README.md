@@ -32,7 +32,7 @@ library consumer stays lean, but `gmailscan-auth` uses both: `--account` needs
 `auth`, `--push` needs `secrets`. Installing one leaves the other failing weeks
 later at the moment you reach for it, with the install long forgotten.
 
-A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.3.0`,
+A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.0`,
 and read [CHANGELOG.md](CHANGELOG.md) before deciding a bump can wait.
 
 ### Check the pin in your own tests
@@ -62,10 +62,14 @@ It fails when the pin and the environment disagree (the pin bumped and the venv
 never reinstalled, or the reverse), so old shared code fails your tests instead
 of your sweep. It cannot tell you the pin itself has fallen behind. The
 CHANGELOG can, and so can the line every client logs when it is built:
-`gmailscan 0.3.0 reading <address>`.
+`gmailscan 0.4.0 reading <address>`.
 
 `__version__` has matched the tag since v0.1.5. Earlier tags all report `0.1.0`,
 so this check means nothing below v0.1.5.
+
+The package ships `py.typed` and passes strict mypy, so a consumer needs no
+`ignore_missing_imports` override for `gmailscan.*` and no `type: ignore` on a
+`GmailClient` subclass.
 
 ## Scope
 
@@ -99,6 +103,13 @@ so the HTML is the signal and the text part is a lossy summary.
 Shipping either as `body` would have silently changed what one project reads
 without changing a line of its code, so callers say which they want.
 
+### `received`, and why not `date`
+
+`date` is the `Date` header: whatever the sender's machine wrote, in its own
+time zone and occasionally its own language. `received` is Gmail's own receipt
+timestamp (`internalDate`) as a UTC `datetime`, and is the one to sort or
+window by. It is `None` on a hand-built fixture.
+
 ### Is the grant alive?
 
 `is_configured()` checks that a token file exists. A revoked grant leaves its
@@ -116,7 +127,8 @@ health("mdanifo@gmail.com")  # "ok", "revoked", "expired", "configured" or "miss
 `invalid_grant`. `configured` means a token exists and nothing more could be
 learned, such as with no network. It is not a reason to re-authorize. A
 consumer that overrides `GmailClient.token_file()` should call `client.health()`
-so the check reads the file the client would.
+so the check reads the file the client would. `health_detail()` returns the
+same verdict with Google's reason attached, for a status screen.
 
 ## Quota
 
@@ -145,8 +157,8 @@ Sizing a sweep:
 
 - `search(limit=200)` costs about 4,000 units, two-thirds of a minute on its
   own. `limit` is per mailbox and a hard stop.
-- `after=` narrows the query on Google's side and is the cheapest saving there
-  is: sweep since the last run, not over a fixed window.
+- `after=` and `before=` narrow the query on Google's side and are the cheapest
+  saving there is: sweep since the last run, not over a fixed window.
 - `headers_only=True` saves bandwidth, not quota. A metadata get costs the same
   20 units as a full one; it downloads kilobytes instead of megabytes.
 - A thread read costs two message reads. Reading every thread a search turned
@@ -190,9 +202,14 @@ every "why did the sweep find nothing" investigation:
 ```
 token directory: /home/mike/.config/google-oauth
 
-  mdanifo100@gmail.com         DEAD        invalid_grant
-  mdanifo@gmail.com            REFRESHED   expires 2026-08-31 13:01:12
+  mdanifo100@gmail.com         REVOKED     invalid_grant: Token has been expired or revoked.
+  mdanifo@gmail.com            OK          granted 32d ago (2026-08-31)   <-- outlived Testing's 7 days
 ```
+
+The status column is `health()`'s verdict, so it cannot disagree with what a
+consumer's own status check says. The exit status is non-zero unless every
+grant is `OK`. `--status --json` prints the same report as a document, with a
+`health` key per account, for a cron job or a dashboard to read.
 
 **On a headless box use `--manual`.** There is no local listener and no port
 forward: the browser's redirect fails to load, but the address bar still carries
@@ -237,8 +254,8 @@ with no new mail.
 
 ```bash
 pip install -e ".[dev]"
-pytest
+ruff check src tests && ruff format --check src tests && mypy && pytest
 ```
 
-The Gmail API is faked throughout — the suite never touches the network or a
-real token.
+CI runs the same four on every pull request, on Python 3.10 and 3.12. The Gmail
+API is faked throughout — the suite never touches the network or a real token.
