@@ -163,3 +163,49 @@ def test_read_meta_never_raises(monkeypatch):
 
     _install(monkeypatch, _FakeSecrets({"_meta": {"granted_at": "x"}}))
     assert secrets_mod.read_meta() == {"granted_at": "x"}
+
+
+def test_push_only_creates_the_secret_when_it_is_missing(monkeypatch, tmp_path):
+    """Falling back to create_secret on any error turned an AccessDenied on the
+    put into 'secret already exists' from the create -- the wrong problem."""
+    from gmailscan import auth
+
+    path = auth.token_path("a@gmail.com")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"refresh_token": "r", "client_id": "c"}))
+
+    class _Denied(_FakeSecrets):
+        def put_secret_value(self, SecretId, SecretString):  # noqa: N803
+            raise RuntimeError("AccessDeniedException: not authorized to PutSecretValue")
+
+    fake = _Denied(stored={}, exists=True)
+    _install(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="AccessDenied"):
+        secrets_mod.push_tokens(["a@gmail.com"])
+    assert fake.create_calls == []
+
+
+def test_push_recognises_botocores_not_found_shape(monkeypatch, tmp_path):
+    """boto3 raises ClientError with the code in .response, not in the message."""
+    from gmailscan import auth
+
+    path = auth.token_path("a@gmail.com")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"refresh_token": "r", "client_id": "c"}))
+
+    class _ClientError(Exception):
+        response = {
+            "Error": {
+                "Code": "ResourceNotFoundException",
+                "Message": "Secrets Manager can't find it.",
+            }
+        }
+
+    class _Missing(_FakeSecrets):
+        def put_secret_value(self, SecretId, SecretString):  # noqa: N803
+            raise _ClientError("An error occurred")
+
+    fake = _Missing(stored={}, exists=False)
+    _install(monkeypatch, fake)
+    assert secrets_mod.push_tokens(["a@gmail.com"]) == ["a@gmail.com"]
+    assert len(fake.create_calls) == 1
