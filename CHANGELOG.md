@@ -6,7 +6,48 @@ existed the answer lived in `git log`, which nobody reads before a bump they do
 not know they need: jobpipe sat on v0.1.3 through five releases, including the
 one that fixed its own four-day Gmail outage.
 
-Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.3.0`.
+Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.0`.
+
+## v0.4.0 (2026-10-02)
+
+Fixes
+
+- `gmailscan-auth --status --json` carries the status. It was documented as
+  machine-readable `--status` output and held only the token directory and the
+  account list; it now reports each account's `state`, `detail` and grant age,
+  and performs the same refresh `--status` does.
+- `--status` reports `health()`'s verdict instead of classifying a grant with
+  its own code, so the CLI and a consumer's status screen cannot disagree about
+  a mailbox. Exit status is non-zero unless every grant is `ok`.
+- `push_tokens()` only falls back to creating the secret when the put says it
+  is missing. Before, any error on the put (an AccessDenied, say) was retried
+  as a create, which failed with "already exists" and pointed at the wrong
+  problem.
+- `search()` asks Gmail for only as many message ids as `limit` leaves to
+  fetch, instead of 100 a page regardless.
+
+Adds
+
+- `health_detail(account)`: `health()` plus the reason, for a status screen or
+  a log.
+- `search(before=...)` and `search_all(before=...)`, alongside `after`.
+- `EmailMessage.received`: Gmail's `internalDate` as a UTC `datetime`, the
+  timestamp to sort or window by. `None` on a hand-built fixture.
+- `py.typed`. The package passes strict mypy, so a consumer can drop its
+  `ignore_missing_imports` override for `gmailscan.*` and any `type: ignore`
+  on a `GmailClient` subclass.
+- CI on pull requests and `main`: ruff, ruff format, strict mypy, pytest on
+  3.10 and 3.12.
+- After a consent, the CLI says to `--push` if anything unattended uses the
+  grant.
+
+Breaks
+
+- The `--status` output changed again: the status column is now the `health()`
+  state name (`OK`, `REVOKED`, `EXPIRED`, `CONFIGURED`, `MISSING`) and the
+  `REFRESHED`/`DEAD`/`UNREADABLE` words are gone. Nothing known parses it.
+- `--status --json` gained a `health` key and may now exit non-zero. The
+  `token_dir` and `accounts` keys are unchanged.
 
 ## v0.3.0 (2026-09-13)
 
