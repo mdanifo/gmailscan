@@ -144,9 +144,22 @@ def push_tokens(
     body = json.dumps(existing)
     try:
         client.put_secret_value(SecretId=secret_name, SecretString=body)
-    except Exception:
+    except Exception as exc:
+        # Only a missing secret is a reason to create one. Falling back on any
+        # error turned an AccessDenied on the put into "secret already exists"
+        # from the create, which points the reader at the wrong problem.
+        if not _is_not_found(exc):
+            raise
         client.create_secret(Name=secret_name, SecretString=body)
     return sorted(pushed)
+
+
+def _is_not_found(exc: Exception) -> bool:
+    """botocore's ClientError carries the code in ``response``; match on that,
+    and on the message for anything that is not botocore."""
+    response = getattr(exc, "response", None)
+    code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
+    return "ResourceNotFound" in code or "ResourceNotFound" in str(exc)
 
 
 def read_meta(
