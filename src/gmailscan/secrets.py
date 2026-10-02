@@ -149,7 +149,9 @@ def push_tokens(
     return sorted(pushed)
 
 
-def read_meta(*, secret_name: str = DEFAULT_SECRET_NAME, region: str | None = None) -> dict:
+def read_meta(
+    *, secret_name: str = DEFAULT_SECRET_NAME, region: str | None = None
+) -> dict[str, Any]:
     """The ``_meta`` object from the secret, or ``{}`` if absent or unreadable.
 
     Unlike the rest of this module this never raises: a missing reminder
