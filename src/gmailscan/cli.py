@@ -37,6 +37,7 @@ from .auth import (
     SETUP_HINT,
     GmailAuthRequired,
     authorized_accounts,
+    health_detail,
     persist_token,
     token_dir,
     token_path,
@@ -88,7 +89,12 @@ def _granted_age(path: Path) -> str:
 
 
 def _status() -> int:
-    """Report every authorized mailbox and whether its grant still works."""
+    """Report every authorized mailbox and whether its grant still works.
+
+    The verdict is :func:`gmailscan.auth.health_detail`'s, the same one a
+    consumer's status screen gets, so the two cannot disagree about a mailbox.
+    Exit status is non-zero unless every grant is ok.
+    """
     accounts = authorized_accounts()
     print(f"token directory: {token_dir()}")
     if not accounts:
@@ -96,48 +102,44 @@ def _status() -> int:
         print(SETUP_HINT)
         return 1
 
-    try:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-    except ImportError:
-        print("\ngoogle-auth is not installed; cannot check token health.")
-        for account in accounts:
-            print(f"  {account:28} token present at {token_path(account)}")
-        return 1
-
     print()
-    failures = 0
+    dead = 0
+    unhealthy = 0
     for account in accounts:
         path = token_path(account)
-        try:
-            creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call, unused-ignore]
-                str(path), list(SCOPES)
-            )
-        except ValueError as exc:
-            print(f"  {account:28} UNREADABLE  {exc}")
-            failures += 1
-            continue
+        state, detail = health_detail(account, path=path)
+        note = _granted_age(path) if state == "ok" else detail[:80]
+        print(f"  {account:28} {state.upper():11} {note}")
+        if state != "ok":
+            unhealthy += 1
+        if state in ("revoked", "expired", "missing"):
+            dead += 1
 
-        granted = _granted_age(path)
-        if creds.valid:
-            print(f"  {account:28} OK          {granted}")
-            continue
-        try:
-            creds.refresh(Request())
-        except Exception as exc:
-            detail = str(exc)
-            print(f"  {account:28} DEAD        {detail[:80]}")
-            if "invalid_grant" in detail:
-                failures += 1
-            continue
-        persist_token(path, creds.to_json())
-        print(f"  {account:28} REFRESHED   {granted}")
-
-    if failures:
-        print(f"\n{failures} account(s) need re-authorizing.")
+    if dead:
+        print(f"\n{dead} account(s) need re-authorizing.")
         print(SETUP_HINT)
-        return 1
-    return 0
+    return 1 if unhealthy else 0
+
+
+def _status_json() -> int:
+    """``--status --json``: the same report as a document, health included."""
+    accounts = authorized_accounts()
+    report = {
+        account: {
+            "state": state,
+            "detail": detail,
+            "granted": _granted_age(token_path(account)),
+        }
+        for account in accounts
+        for state, detail in [health_detail(account, path=token_path(account))]
+    }
+    print(
+        json.dumps(
+            {"token_dir": str(token_dir()), "accounts": accounts, "health": report},
+            indent=2,
+        )
+    )
+    return 0 if accounts and all(h["state"] == "ok" for h in report.values()) else 1
 
 
 def _manual_consent(flow: Any, port: int) -> Any:
@@ -210,6 +212,13 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
     persist_token(path, creds.to_json())
     _record_grant(path)
     print(f"\nAuthorized {account}; token written to {path}")
+    # Re-authorizing is two steps for anything unattended, and the second is
+    # the one that gets skipped: the laptop looks fine while the scheduled job
+    # keeps hydrating the dead grant from the secret.
+    print(
+        "If a Lambda or scheduled container uses this grant, push it too:\n"
+        f"  gmailscan-auth --push --account {account}"
+    )
     return 0
 
 
@@ -262,10 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.push:
         return _push(args)
     if args.status or not args.account:
-        if args.json:
-            print(json.dumps({"token_dir": str(token_dir()), "accounts": authorized_accounts()}))
-            return 0
-        return _status()
+        return _status_json() if args.json else _status()
     return _authorize(args.account.strip().lower(), args)
 
 
