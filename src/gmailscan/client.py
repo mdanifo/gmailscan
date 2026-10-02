@@ -23,10 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from .auth import (
+    SETUP_HINT,
     GmailAuthRequired,
     GmailUnavailable,
     Health,
-    SETUP_HINT,
     authorized_accounts,
     health,
     load_credentials,
@@ -128,13 +128,10 @@ class GmailClient:
                 from googleapiclient.discovery import build
             except ImportError as exc:  # pragma: no cover - exercised by the import guard test
                 raise GmailUnavailable(
-                    "google-api-python-client is not installed; install gmailscan's "
-                    "dependencies."
+                    "google-api-python-client is not installed; install gmailscan's dependencies."
                 ) from exc
 
-            creds = self._credentials or load_credentials(
-                self.account, path=self.token_file()
-            )
+            creds = self._credentials or load_credentials(self.account, path=self.token_file())
             self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._service
 
@@ -163,10 +160,7 @@ class GmailClient:
             query = f"{query} after:{after.strftime('%Y/%m/%d')}"
 
         fmt = "metadata" if headers_only else "full"
-        extra = (
-            {"metadataHeaders": ["From", "To", "Subject", "Date"]}
-            if headers_only else {}
-        )
+        extra = {"metadataHeaders": ["From", "To", "Subject", "Date"]} if headers_only else {}
 
         messages = self.service.users().messages()
         page_token: str | None = None
@@ -259,7 +253,9 @@ def _with_backoff(request: Any, *, attempts: int = 9) -> Any:
             delay = retry_after or min(90.0, 2.0**attempt) * (0.5 + random.random() / 2)
             log.warning(
                 "Gmail rate limit (attempt %d/%d); retrying in %.1fs",
-                attempt + 1, attempts, delay,
+                attempt + 1,
+                attempts,
+                delay,
             )
             time.sleep(delay)
     raise RuntimeError("unreachable")
@@ -314,9 +310,7 @@ def search_all(
     failures: list[str] = []
     for client in targets:
         try:
-            yield from client.search(
-                query, after=after, limit=limit, headers_only=headers_only
-            )
+            yield from client.search(query, after=after, limit=limit, headers_only=headers_only)
         except GmailAuthRequired as exc:
             failures.append(client.account)
             log.warning("skipping %s: %s", client.account, exc)

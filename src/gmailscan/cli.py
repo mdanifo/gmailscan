@@ -24,12 +24,13 @@ The grant is ``gmail.readonly``. It cannot send, modify, label or delete mail.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
 from datetime import datetime, timezone
-
 from pathlib import Path
+from typing import Any
 
 from .auth import (
     SCOPES,
@@ -40,7 +41,6 @@ from .auth import (
     token_dir,
     token_path,
 )
-
 
 GRANTED_SUFFIX = ".granted"
 
@@ -60,12 +60,9 @@ def _granted_marker(path: Path) -> Path:
 
 
 def _record_grant(path: Path) -> None:
-    try:
-        _granted_marker(path).write_text(
-            datetime.now(timezone.utc).isoformat(), encoding="utf-8"
-        )
-    except OSError:
-        pass  # a read-only store is not a reason to fail a consent that worked
+    # A read-only store is not a reason to fail a consent that worked.
+    with contextlib.suppress(OSError):
+        _granted_marker(path).write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
 
 
 def _granted_age(path: Path) -> str:
@@ -143,7 +140,7 @@ def _status() -> int:
     return 0
 
 
-def _manual_consent(flow: object, port: int) -> object:
+def _manual_consent(flow: Any, port: int) -> Any:
     """Consent without a local redirect server, for a headless box."""
     # The redirect is plain http on loopback; oauthlib refuses that by default.
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
@@ -152,14 +149,14 @@ def _manual_consent(flow: object, port: int) -> object:
     # only breaks the flow.
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
-    flow.redirect_uri = f"http://localhost:{port}/"  # type: ignore[attr-defined]
-    url, _ = flow.authorization_url(prompt="consent", access_type="offline")  # type: ignore[attr-defined]
+    flow.redirect_uri = f"http://localhost:{port}/"
+    url, _ = flow.authorization_url(prompt="consent", access_type="offline")
     print("\nOpen this in a browser signed in as the account being authorized:\n")
     print(f"  {url}\n")
     print("The page it redirects to will fail to load. That is expected.")
     redirected = input("Paste the full localhost URL from the address bar: ").strip()
-    flow.fetch_token(authorization_response=redirected)  # type: ignore[attr-defined]
-    return flow.credentials  # type: ignore[attr-defined]
+    flow.fetch_token(authorization_response=redirected)
+    return flow.credentials
 
 
 def _authorize(account: str, args: argparse.Namespace) -> int:
@@ -195,8 +192,10 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
         return 2
 
     flow = InstalledAppFlow.from_client_secrets_file(args.client_secret_file, list(SCOPES))
-    creds = _manual_consent(flow, args.port) if args.manual else flow.run_local_server(
-        port=args.port, prompt="consent", access_type="offline"
+    creds = (
+        _manual_consent(flow, args.port)
+        if args.manual
+        else flow.run_local_server(port=args.port, prompt="consent", access_type="offline")
     )
 
     if not getattr(creds, "refresh_token", None):
