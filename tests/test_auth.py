@@ -325,3 +325,111 @@ def test_the_readme_pin_example_names_the_current_release():
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
     assert f"gmailscan@v{gmailscan.__version__}" in readme
     assert f"gmailscan {gmailscan.__version__} reading" in readme
+
+
+# ------------------------------------- a grant that has never had an access token
+
+
+def test_load_credentials_refreshes_a_token_that_was_never_used(monkeypatch, tmp_path):
+    """A file holding a refresh token but no access token must be refreshed, not
+    reported as unrenewable. google-auth happens to make that work by treating
+    a missing expiry as "expired now"; load_credentials no longer leans on that
+    detail and applies the same rule health() does: not valid and refreshable
+    means refresh."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=None, token=None)
+
+    def refreshed(self, _request):
+        self.token = "fresh"
+        self.expiry = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", refreshed)
+    assert auth.load_credentials("a@gmail.com").token == "fresh"
+
+
+def test_health_detail_carries_googles_reason(monkeypatch, tmp_path):
+    from google.auth.exceptions import RefreshError
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=PAST)
+
+    def refused(*_a, **_k):
+        raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", refused)
+    assert auth.health_detail("a@gmail.com") == (
+        "revoked",
+        "invalid_grant: Token has been expired or revoked.",
+    )
+    assert auth.health_detail("nobody@gmail.com")[0] == "missing"
+
+
+# ---------------------------------------------------------------- --status
+
+
+def _fake_health(verdicts):
+    def health_detail(account, *, path=None):
+        return verdicts[account]
+
+    return health_detail
+
+
+def test_status_reports_healths_verdict_and_fails_on_a_dead_grant(monkeypatch, tmp_path, capsys):
+    """--status and health() used to classify a grant independently and could
+    disagree about the same mailbox. Now there is one verdict."""
+    from gmailscan import cli
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "alive@gmail.com")
+    _write_token(tmp_path, "dead@gmail.com")
+    monkeypatch.setattr(
+        cli,
+        "health_detail",
+        _fake_health(
+            {
+                "alive@gmail.com": ("ok", "refreshed"),
+                "dead@gmail.com": ("revoked", "invalid_grant: Token has been expired or revoked."),
+            }
+        ),
+    )
+
+    assert cli.main(["--status"]) == 1
+    out = capsys.readouterr().out
+    assert "alive@gmail.com" in out and "OK" in out
+    assert "dead@gmail.com" in out and "REVOKED" in out and "invalid_grant" in out
+    assert "1 account(s) need re-authorizing" in out
+
+
+def test_status_json_actually_carries_the_status(monkeypatch, tmp_path, capsys):
+    """It was documented as machine-readable --status and contained no status."""
+    import json as _json
+
+    from gmailscan import cli
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    monkeypatch.setattr(cli, "health_detail", _fake_health({"a@gmail.com": ("ok", "valid")}))
+
+    assert cli.main(["--status", "--json"]) == 0
+    report = _json.loads(capsys.readouterr().out)
+    assert report["accounts"] == ["a@gmail.com"]
+    assert report["health"]["a@gmail.com"]["state"] == "ok"
+    assert "granted" in report["health"]["a@gmail.com"]
+
+
+def test_an_unreachable_google_is_not_a_reauth_order_in_status(monkeypatch, tmp_path, capsys):
+    from gmailscan import cli
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    monkeypatch.setattr(
+        cli,
+        "health_detail",
+        _fake_health({"a@gmail.com": ("configured", "could not reach Google")}),
+    )
+    assert cli.main(["--status"]) == 1  # not healthy, so not 0
+    out = capsys.readouterr().out
+    assert "CONFIGURED" in out
+    assert "need re-authorizing" not in out

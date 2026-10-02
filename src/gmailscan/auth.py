@@ -132,37 +132,50 @@ def health(account: str, *, path: Path | None = None) -> Health:
       :func:`load_credentials` would.
 
     Never raises. ``path`` overrides discovery, as for :func:`load_credentials`.
+    :func:`health_detail` returns the same verdict with the reason attached.
+    """
+    return health_detail(account, path=path)[0]
+
+
+def health_detail(account: str, *, path: Path | None = None) -> tuple[Health, str]:
+    """:func:`health`, plus one line saying why -- for a status screen or a log.
+
+    The detail is for a person: the path that is missing, Google's own error
+    text for a refused refresh, ``"refreshed"`` or ``"valid"`` for ok. Code
+    should branch on the state, never on the detail.
     """
     path = path or token_path(account)
     if not path.exists():
-        return "missing"
+        return "missing", f"no token file at {path}"
     try:
         from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
     except ImportError:
-        return "configured"
+        return "configured", "google-auth is not installed, so the grant cannot be checked"
 
     try:
         creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call, unused-ignore]
             str(path), list(SCOPES)
         )
-    except ValueError:
-        return "expired"
-    except OSError:
-        return "configured"  # there, but not readable by this process
+    except ValueError as exc:
+        return "expired", f"not a usable authorized-user file ({exc})"
+    except OSError as exc:
+        return "configured", f"token file is not readable ({exc})"
     if not creds.refresh_token:
-        return "expired"
+        return "expired", "no refresh token, so it cannot be renewed"
     if creds.valid:
-        return "ok"
+        return "ok", "valid"
     try:
         creds.refresh(Request())
     except RefreshError as exc:
-        return "configured" if getattr(exc, "retryable", False) else "revoked"
-    except Exception:
-        return "configured"
+        if getattr(exc, "retryable", False):
+            return "configured", f"Google could not answer just now ({exc})"
+        return "revoked", str(exc)
+    except Exception as exc:
+        return "configured", f"could not reach Google ({exc})"
     persist_token(path, creds.to_json())
-    return "ok"
+    return "ok", "refreshed"
 
 
 def persist_token(path: Path, json_text: str) -> None:
@@ -222,16 +235,20 @@ def load_credentials(account: str, *, path: Path | None = None) -> Any:
 
     if creds.valid:
         return creds
-    if creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-        except Exception as exc:
-            raise GmailAuthRequired(
-                f"Gmail token refresh for {account} failed ({exc}); the grant was "
-                f"revoked or expired. {SETUP_HINT}"
-            ) from exc
-        persist_token(path, creds.to_json())
-        return creds
-    raise GmailAuthRequired(
-        f"Gmail token at {path} has no refresh token, so it cannot be renewed. {SETUP_HINT}"
-    )
+    if not creds.refresh_token:
+        raise GmailAuthRequired(
+            f"Gmail token at {path} has no refresh token, so it cannot be renewed. {SETUP_HINT}"
+        )
+    # Not "if expired": a file holding a refresh token but no access token --
+    # one hydrated from a store that kept only the grant -- is neither valid
+    # nor expired, and used to be reported as having no refresh token at all.
+    # Anything that is not valid and can be refreshed, is.
+    try:
+        creds.refresh(Request())
+    except Exception as exc:
+        raise GmailAuthRequired(
+            f"Gmail token refresh for {account} failed ({exc}); the grant was "
+            f"revoked or expired. {SETUP_HINT}"
+        ) from exc
+    persist_token(path, creds.to_json())
+    return creds
