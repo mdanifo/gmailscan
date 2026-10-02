@@ -61,7 +61,7 @@ def test_importing_gmailscan_never_requires_boto3():
     import gmailscan
 
     assert "boto3" not in str(gmailscan.__doc__ or "") or True
-    source = (secrets_mod.__file__ or "")
+    source = secrets_mod.__file__ or ""
     assert source.endswith("secrets.py")
     # boto3 is imported inside _client, never at module scope.
     with open(source, encoding="utf-8") as fh:

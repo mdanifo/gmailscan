@@ -196,9 +196,7 @@ def test_health_never_raises_on_an_unreadable_token(monkeypatch, tmp_path):
     def denied(*_a, **_k):
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr(
-        "google.oauth2.credentials.Credentials.from_authorized_user_file", denied
-    )
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.from_authorized_user_file", denied)
     assert auth.health("a@gmail.com") == "configured"
 
 

@@ -1,0 +1,32 @@
+# The consumers (amazon-ledger, open-job-aggregator, virtual-closet) all run CI;
+# the library they share did not, so nothing stood between a red commit and a
+# tag they would pin. This is that something.
+#
+# requires-python is >=3.10, so the oldest and the newest supported versions
+# both run. The suite fakes the Gmail API throughout and needs no credentials.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: mypy
+      - run: pytest -q
