@@ -534,3 +534,57 @@ def test_no_request_bypasses_the_backoff():
     source = inspect.getsource(client_mod)
     backoff = inspect.getsource(client_mod._with_backoff)
     assert source.count(".execute()") == backoff.count(".execute()") == 1
+
+
+# ------------------------------------------------ windowing and list sizing
+
+
+def test_search_applies_the_before_filter():
+    captured = {}
+
+    class _Recording(_FakeMessages):
+        def list(self, **kw):
+            captured.update(kw)
+            return super().list(**kw)
+
+    service = _FakeService([_payload()])
+    service._messages = _Recording([_payload()])
+    list(GmailClient("a@gmail.com", service=service).search("x", before=date(2026, 9, 1)))
+    assert "before:2026/09/01" in captured["q"]
+
+
+def test_search_never_lists_more_ids_than_it_will_fetch():
+    """A list call costs 5 units whatever it returns, but ids past the limit
+    are paid for and dropped; ask for exactly what is left."""
+    sizes = []
+
+    class _Recording(_FakeMessages):
+        def list(self, **kw):
+            sizes.append(kw["maxResults"])
+            return super().list(**kw)
+
+    service = _FakeService([_payload(msg_id=f"m{i}") for i in range(5)])
+    service._messages = _Recording(service._messages._payloads.values())
+    list(GmailClient("a@gmail.com", service=service).search("x", limit=3))
+    assert sizes == [3]
+
+    sizes.clear()
+    list(GmailClient("a@gmail.com", service=service).search("x", limit=500))
+    assert sizes == [100]
+
+
+def test_received_comes_from_gmails_own_timestamp():
+    """The Date header is whatever the sender wrote, in its own zone;
+    internalDate is Gmail's receipt time and the one to sort or window by."""
+    from datetime import datetime, timezone
+
+    payload = _payload()
+    payload["internalDate"] = "1756044131000"  # 2025-08-24T14:02:11Z
+    msg = decode_message(payload)
+    assert msg.received == datetime(2025, 8, 24, 14, 2, 11, tzinfo=timezone.utc)
+    assert msg.date == "Mon, 24 Aug 2026 10:02:11 -0400"  # the header is untouched
+
+
+def test_received_is_none_on_a_hand_built_fixture():
+    assert decode_message(_payload()).received is None
+    assert EmailMessage(id="1", subject="s", sender="f", date="d").received is None

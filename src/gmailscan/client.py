@@ -18,7 +18,7 @@ import base64
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +70,10 @@ class EmailMessage:
     threadId: str = ""
     to: str = ""  # needed so mail you sent names the other party, not you
     account: str = ""  # which mailbox this came from, once more than one is swept
+    # Gmail's own receipt time, UTC. The Date header above is whatever the
+    # sender's machine wrote, in its own zone and occasionally its own
+    # language; this is the one to sort or window by.
+    received: datetime | None = None
 
     @property
     def text_first(self) -> str:
@@ -140,10 +144,15 @@ class GmailClient:
         query: str,
         *,
         after: date | None = None,
+        before: date | None = None,
         limit: int = 200,
         headers_only: bool = False,
     ) -> Iterator[EmailMessage]:
         """Yield decoded messages matching a Gmail search query.
+
+        ``after`` and ``before`` narrow the query on Google's side, which is
+        the cheapest saving there is (see the README's Quota section). Gmail
+        treats both as exclusive, in the mailbox's time zone.
 
         ``limit`` is a hard stop rather than a page size: the first sweep of a
         mailbox with years of history would otherwise walk all of it.
@@ -158,6 +167,8 @@ class GmailClient:
         """
         if after is not None:
             query = f"{query} after:{after.strftime('%Y/%m/%d')}"
+        if before is not None:
+            query = f"{query} before:{before.strftime('%Y/%m/%d')}"
 
         fmt = "metadata" if headers_only else "full"
         extra = {"metadataHeaders": ["From", "To", "Subject", "Date"]} if headers_only else {}
@@ -166,8 +177,15 @@ class GmailClient:
         page_token: str | None = None
         fetched = 0
         while fetched < limit:
+            # Never list more ids than will be fetched: the stubs past the limit
+            # are paid for (a list costs 5 units) and thrown away.
             response = _with_backoff(
-                messages.list(userId="me", q=query, pageToken=page_token, maxResults=100)
+                messages.list(
+                    userId="me",
+                    q=query,
+                    pageToken=page_token,
+                    maxResults=min(100, limit - fetched),
+                )
             )
             for stub in response.get("messages", []):
                 if fetched >= limit:
@@ -289,6 +307,7 @@ def search_all(
     *,
     accounts: list[str] | None = None,
     after: date | None = None,
+    before: date | None = None,
     limit: int = 200,
     headers_only: bool = False,
 ) -> Iterator[EmailMessage]:
@@ -310,7 +329,9 @@ def search_all(
     failures: list[str] = []
     for client in targets:
         try:
-            yield from client.search(query, after=after, limit=limit, headers_only=headers_only)
+            yield from client.search(
+                query, after=after, before=before, limit=limit, headers_only=headers_only
+            )
         except GmailAuthRequired as exc:
             failures.append(client.account)
             log.warning("skipping %s: %s", client.account, exc)
@@ -338,7 +359,16 @@ def decode_message(payload: dict[str, Any], *, account: str = "") -> EmailMessag
         text=bodies.get("text/plain"),
         html=bodies.get("text/html"),
         account=account,
+        received=_received(payload.get("internalDate")),
     )
+
+
+def _received(internal_date: Any) -> datetime | None:
+    """``internalDate`` is epoch milliseconds as a string; absent on a fixture."""
+    try:
+        return datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def _collect_bodies(part: dict[str, Any], bodies: dict[str, str]) -> None:
