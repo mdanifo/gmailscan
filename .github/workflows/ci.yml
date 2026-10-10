@@ -11,6 +11,11 @@ on:
     branches: [main]
   pull_request:
 
+# A push to a PR branch supersedes the run already going for it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -29,4 +34,4 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: mypy
-      - run: pytest -q
+      - run: pytest -q --cov --cov-report=term-missing
