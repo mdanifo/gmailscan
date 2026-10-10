@@ -57,8 +57,9 @@ def test_the_gmailscan_pin_is_what_is_installed():
     import gmailscan
 
     pins = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
-    pinned = re.search(r"gmailscan@v(\d+\.\d+\.\d+)", pins)
-    assert pinned, "no gmailscan@vX.Y.Z pin found"
+    # Either form: the wheel (gmailscan-X.Y.Z-py3-none-any.whl) or the tag (@vX.Y.Z).
+    pinned = re.search(r"gmailscan(?:-|@v)(\d+\.\d+\.\d+)", pins)
+    assert pinned, "no gmailscan wheel or tag pin found"
     assert gmailscan.__version__ == pinned.group(1), (
         f"installed gmailscan {gmailscan.__version__}, pinned {pinned.group(1)}: "
         "reinstall, or bump the pin"
