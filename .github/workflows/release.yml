@@ -1,0 +1,57 @@
+# Pushing a tag vX.Y.Z publishes the release: the suite runs once more on the
+# tagged commit, the tag is checked against __version__ and the CHANGELOG, and
+# a wheel and sdist are attached to a GitHub release whose notes are that
+# version's CHANGELOG entry.
+#
+# The wheel is the point. Every consumer image used to apt-get install git,
+# pip install from git+https, then purge git again, because python:slim ships
+# no git and a VCS install needs one. A wheel on the release page installs with
+# pip alone and can be hash-pinned.
+#
+# This replaces the by-hand sequence of tag, release, notes that produced two
+# releases so far, and the earlier state where tags existed with no release at
+# all and the repo page called v0.1.0 "Latest" for six weeks.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]" build
+
+      - name: The tag, __version__ and the CHANGELOG must agree
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          python - "$version" <<'PY'
+          import sys, gmailscan
+          tag = sys.argv[1]
+          if gmailscan.__version__ != tag:
+              sys.exit(f"tag says {tag} but gmailscan.__version__ is {gmailscan.__version__}")
+          PY
+          python scripts/release_notes.py "$GITHUB_REF_NAME" > notes.md
+
+      - run: pytest -q
+      - run: python -m build
+      - run: ls -l dist/
+
+      - name: Publish the release with the wheel and sdist attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --verify-tag --latest
+          --title "$GITHUB_REF_NAME"
+          --notes-file notes.md
