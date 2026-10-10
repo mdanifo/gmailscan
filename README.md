@@ -32,8 +32,15 @@ library consumer stays lean, but `gmailscan-auth` uses both: `--account` needs
 `auth`, `--push` needs `secrets`. Installing one leaves the other failing weeks
 later at the moment you reach for it, with the install long forgotten.
 
-A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.0`,
+A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.1`,
 and read [CHANGELOG.md](CHANGELOG.md) before deciding a bump can wait.
+
+Every release also carries a wheel. An image should install that: pip alone
+does it, where the git+https form needs git installed and purged again.
+
+```bash
+pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.4.1/gmailscan-0.4.1-py3-none-any.whl"
+```
 
 ### Check the pin in your own tests
 
@@ -62,7 +69,7 @@ It fails when the pin and the environment disagree (the pin bumped and the venv
 never reinstalled, or the reverse), so old shared code fails your tests instead
 of your sweep. It cannot tell you the pin itself has fallen behind. The
 CHANGELOG can, and so can the line every client logs when it is built:
-`gmailscan 0.4.0 reading <address>`.
+`gmailscan 0.4.1 reading <address>`.
 
 `__version__` has matched the tag since v0.1.5. Earlier tags all report `0.1.0`,
 so this check means nothing below v0.1.5.
@@ -254,8 +261,28 @@ with no new mail.
 
 ```bash
 pip install -e ".[dev]"
-ruff check src tests && ruff format --check src tests && mypy && pytest
+ruff check src tests scripts && ruff format --check src tests scripts && mypy && pytest --cov
 ```
 
-CI runs the same four on every pull request, on Python 3.10 and 3.12. The Gmail
-API is faked throughout — the suite never touches the network or a real token.
+CI runs the same on every pull request, on Python 3.10 and 3.12, and fails the
+build under 95% coverage. Three tiers, all offline, all run by default:
+
+- **Unit** (`test_auth.py`, `test_client.py`, `test_secrets.py`, `test_cli.py`):
+  the Gmail API, google-auth and boto3 faked one object at a time.
+- **Component** (`pytest -m component`): `gmailscan-auth` run as a subprocess
+  through its console-script entry point, checking exit status and output the
+  way a cron line sees them.
+- **End to end** (`pytest -m e2e`): the real token file, google-auth refresh,
+  discovery client and httplib2 against a local fake Google in
+  `tests/conftest.py`, a quota refusal with `Retry-After` and a revoked grant
+  included. This is the tier that notices when google-auth changes.
+
+## Releasing
+
+1. Bump `version` in `pyproject.toml` and `__version__`, and write the
+   CHANGELOG entry. The suite fails if the three disagree.
+2. Tag and push: `git tag -a vX.Y.Z -m vX.Y.Z && git push origin vX.Y.Z`.
+
+The Release workflow runs the suite on the tagged commit, checks the tag
+against `__version__` and the CHANGELOG, builds a wheel and sdist, and
+publishes the GitHub release with that version's CHANGELOG entry as its notes.
