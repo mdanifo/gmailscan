@@ -323,8 +323,10 @@ def test_the_readme_pin_example_names_the_current_release():
     import gmailscan
 
     readme = (Path(__file__).resolve().parent.parent / "README.md").read_text()
-    assert f"gmailscan@v{gmailscan.__version__}" in readme
-    assert f"gmailscan {gmailscan.__version__} reading" in readme
+    v = gmailscan.__version__
+    assert f"gmailscan@v{v}" in readme
+    assert f"gmailscan {v} reading" in readme
+    assert f"releases/download/v{v}/gmailscan-{v}-py3-none-any.whl" in readme
 
 
 # ------------------------------------- a grant that has never had an access token

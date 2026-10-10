@@ -6,7 +6,36 @@ existed the answer lived in `git log`, which nobody reads before a bump they do
 not know they need: jobpipe sat on v0.1.3 through five releases, including the
 one that fixed its own four-day Gmail outage.
 
-Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.0`.
+Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.1`.
+
+## v0.4.1 (2026-10-10)
+
+Nothing the package does has changed. This release exists to put a wheel on the
+release page, and to prove the workflow that put it there.
+
+Adds
+
+- A wheel and sdist attached to every release, built by a workflow that runs
+  on the tag. `pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.4.1/gmailscan-0.4.1-py3-none-any.whl"`
+  needs no git, which every consumer image was installing and purging around
+  the git+https form.
+- The release workflow refuses a tag whose version does not match
+  `__version__` or has no CHANGELOG entry, and runs the suite on the tagged
+  commit first.
+- Two more test tiers: `gmailscan-auth` run as a subprocess through its entry
+  point, and the real google-auth and discovery-client stack against a local
+  fake Google, quota refusals and a revoked grant included. Coverage is 100%
+  and CI fails under 95%.
+- `pytest-cov` in the `dev` extra.
+
+Fixes
+
+- `gmailscan-auth --push` without boto3 exits 1 with the install command, as
+  it always did in practice; a dead branch that promised exit 2 is gone.
+
+Breaks
+
+- Nothing.
 
 ## v0.4.0 (2026-10-02)
 
