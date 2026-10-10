@@ -276,7 +276,7 @@ def _with_backoff(request: Any, *, attempts: int = 9) -> Any:
                 delay,
             )
             time.sleep(delay)
-    raise RuntimeError("unreachable")
+    raise RuntimeError("unreachable")  # pragma: no cover - the loop returns or raises
 
 
 def clients(accounts: list[str] | None = None) -> list[GmailClient]:
