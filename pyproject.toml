@@ -23,7 +23,14 @@ secrets = ["boto3>=1.28"]
 # The consent flow. Needed once per account by `gmailscan-auth`, never by a
 # project that only reads mail, so it stays out of the runtime dependencies.
 auth = ["google-auth-oauthlib>=1.0"]
-dev = ["pytest>=7", "boto3>=1.28", "google-auth-oauthlib>=1.0", "ruff>=0.6", "mypy>=1.11"]
+dev = [
+    "pytest>=7",
+    "pytest-cov>=5",
+    "boto3>=1.28",
+    "google-auth-oauthlib>=1.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
 
 [project.scripts]
 gmailscan-auth = "gmailscan.cli:main"
@@ -33,6 +40,23 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Three tiers. Unit tests fake the Gmail API one object at a time; the
+# component tier runs the installed command in its own process; the e2e tier
+# runs the real client stack against a fake Google (tests/conftest.py). All
+# three run by default and need no network: `pytest -m e2e` picks one out.
+markers = [
+    "component: the gmailscan-auth command run as a subprocess",
+    "e2e: the real google-auth and discovery client stack against a local fake Google",
+]
+
+[tool.coverage.run]
+source = ["gmailscan"]
+
+[tool.coverage.report]
+show_missing = true
+# What is left uncovered is import guards for optional dependencies that are
+# always installed in the test environment, each marked where it lives.
+fail_under = 95
 
 [tool.setuptools.package-data]
 gmailscan = ["py.typed"]
