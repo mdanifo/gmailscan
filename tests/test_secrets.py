@@ -209,3 +209,74 @@ def test_push_recognises_botocores_not_found_shape(monkeypatch, tmp_path):
     _install(monkeypatch, fake)
     assert secrets_mod.push_tokens(["a@gmail.com"]) == ["a@gmail.com"]
     assert len(fake.create_calls) == 1
+
+
+# ----------------------------------------------------- the rest of the store
+
+
+def test_the_client_is_built_for_the_region_asked_or_the_environments(monkeypatch):
+    import sys
+    import types
+
+    built = []
+    fake_boto3 = types.SimpleNamespace(
+        client=lambda name, region_name=None: built.append((name, region_name)) or "client"
+    )
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    assert secrets_mod._client("us-east-1") == "client"
+    assert secrets_mod._client() == "client"
+    assert built == [("secretsmanager", "us-east-1"), ("secretsmanager", "eu-west-1")]
+
+
+def test_a_secret_that_is_not_json_is_reported_as_such(monkeypatch):
+    class _Garbage(_FakeSecrets):
+        def get_secret_value(self, SecretId):  # noqa: N803
+            return {"SecretString": "not json"}
+
+    _install(monkeypatch, _Garbage())
+    with pytest.raises(GmailAuthRequired, match="not valid JSON"):
+        secrets_mod.hydrate_tokens()
+
+
+def test_a_secret_that_is_json_but_not_an_object_counts_as_empty(monkeypatch):
+    class _List(_FakeSecrets):
+        def get_secret_value(self, SecretId):  # noqa: N803
+            return {"SecretString": "[1, 2]"}
+
+    _install(monkeypatch, _List())
+    with pytest.raises(GmailAuthRequired, match="empty"):
+        secrets_mod.hydrate_tokens()
+
+
+def test_push_skips_an_account_with_no_local_file_and_pushes_the_rest(monkeypatch):
+    from gmailscan import auth
+
+    path = auth.token_path("have@gmail.com")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"refresh_token": "r", "client_id": "c"}))
+    fake = _FakeSecrets(stored={}, exists=True)
+    _install(monkeypatch, fake)
+
+    assert secrets_mod.push_tokens(["have@gmail.com", "missing@gmail.com"]) == ["have@gmail.com"]
+    assert set(fake.stored) == {"have@gmail.com"}
+
+
+def test_push_of_only_missing_accounts_raises_instead_of_pushing_nothing(monkeypatch):
+    _install(monkeypatch, _FakeSecrets(stored={}, exists=True))
+    with pytest.raises(GmailAuthRequired, match="None of the requested accounts"):
+        secrets_mod.push_tokens(["missing@gmail.com"])
+
+
+def test_token_documents_lists_what_push_would_upload(monkeypatch):
+    from gmailscan import auth
+
+    for account in ("a@gmail.com", "b@gmail.com"):
+        path = auth.token_path(account)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    monkeypatch.setenv("GMAILSCAN_ACCOUNTS", "a@gmail.com,b@gmail.com,ghost@gmail.com")
+
+    docs = secrets_mod.token_documents()
+    assert set(docs) == {"a@gmail.com", "b@gmail.com"}  # pinned but fileless is not uploadable
+    assert all(p.exists() for p in docs.values())

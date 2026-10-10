@@ -433,3 +433,72 @@ def test_an_unreachable_google_is_not_a_reauth_order_in_status(monkeypatch, tmp_
     out = capsys.readouterr().out
     assert "CONFIGURED" in out
     assert "need re-authorizing" not in out
+
+
+# --------------------------------------------- the rest of load_credentials
+
+
+def test_token_dir_is_the_canonical_store_when_nothing_overrides_it(monkeypatch):
+    monkeypatch.delenv("GMAILSCAN_TOKEN_DIR", raising=False)
+    assert auth.token_dir() == auth.DEFAULT_TOKEN_DIR
+
+
+def test_load_credentials_explains_an_unusable_token_file(monkeypatch, tmp_path):
+    """A file without a refresh token parses as invalid in google-auth. The
+    error must carry the path and the fix, because the reader is a 3am log."""
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE, refresh_token=None)
+    with pytest.raises(auth.GmailAuthRequired) as excinfo:
+        auth.load_credentials("a@gmail.com")
+    message = str(excinfo.value)
+    assert "token-a@gmail.com.json" in message and "gmailscan-auth" in message
+
+
+def test_load_credentials_refuses_a_token_that_cannot_renew_itself(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=PAST, refresh_token="")
+    with pytest.raises(auth.GmailAuthRequired, match="no refresh token"):
+        auth.load_credentials("a@gmail.com")
+
+
+def test_load_credentials_turns_a_refused_refresh_into_the_fix(monkeypatch, tmp_path):
+    from google.auth.exceptions import RefreshError
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=PAST)
+
+    def refused(*_a, **_k):
+        raise RefreshError("invalid_grant: Token has been expired or revoked.")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", refused)
+    with pytest.raises(auth.GmailAuthRequired) as excinfo:
+        auth.load_credentials("a@gmail.com")
+    assert "invalid_grant" in str(excinfo.value)
+    assert "7 days" in str(excinfo.value)  # the usual cause, named
+
+
+def test_health_without_google_auth_is_configured_not_a_crash(monkeypatch, tmp_path):
+    """is_configured's promise, kept by health too: a box without the Google
+    libraries learns that a token exists and nothing more."""
+    import sys
+
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE)
+    monkeypatch.setitem(sys.modules, "google.auth.exceptions", None)  # the import raises
+    assert auth.health_detail("a@gmail.com") == (
+        "configured",
+        "google-auth is not installed, so the grant cannot be checked",
+    )
+
+
+def test_load_credentials_hands_back_a_live_token_without_touching_google(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    path = _authorized_user(tmp_path, "a@gmail.com", expiry=FUTURE)
+    before = path.read_text()
+
+    def no_network(*_a, **_k):
+        raise AssertionError("a valid access token needs no refresh")
+
+    monkeypatch.setattr("google.oauth2.credentials.Credentials.refresh", no_network)
+    assert auth.load_credentials("a@gmail.com").token == "access"
+    assert path.read_text() == before  # nothing to write back

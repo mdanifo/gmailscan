@@ -223,11 +223,11 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
 
 
 def _push(args: argparse.Namespace) -> int:
-    try:
-        from .secrets import push_tokens
-    except ImportError:
-        print('Needs the secrets extra: pip install "gmailscan[secrets]"', file=sys.stderr)
-        return 2
+    # boto3 is imported lazily inside gmailscan.secrets, so this import cannot
+    # fail for want of the extra; a missing boto3 arrives as GmailAuthRequired
+    # below, with the install command in the message.
+    from .secrets import push_tokens
+
     try:
         pushed = push_tokens(
             [args.account] if args.account else None,

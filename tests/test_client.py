@@ -588,3 +588,43 @@ def test_received_comes_from_gmails_own_timestamp():
 def test_received_is_none_on_a_hand_built_fixture():
     assert decode_message(_payload()).received is None
     assert EmailMessage(id="1", subject="s", sender="f", date="d").received is None
+
+
+# ------------------------------------------------ the rest of the retry loop
+
+
+def test_a_retry_after_that_is_not_a_number_falls_back_to_the_guess(monkeypatch):
+    """Believe the server, but only when it says something usable."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+        def get(self, key):
+            return "soon" if key == "retry-after" else None
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise HttpError(_Resp(), b"{}")
+            return {"ok": True}
+
+    assert client_mod._with_backoff(_Req()) == {"ok": True}
+    assert len(slept) == 1 and 0.5 <= slept[0] <= 1.0  # attempt 0: 2**0 with full jitter
+
+
+def test_an_empty_thread_id_reads_nothing_rather_than_asking_gmail():
+    class _Explodes:
+        def users(self):
+            raise AssertionError("no request should be made")
+
+    assert GmailClient("a@gmail.com", service=_Explodes()).get_thread("") == []
