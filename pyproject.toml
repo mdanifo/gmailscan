@@ -70,7 +70,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
 strict = true
-files = ["src"]
+files = ["src", "scripts"]
 # google-auth and the discovery client ship no stubs; everything from them is
 # Any here, and the public surface narrows it where a caller would notice.
 ignore_missing_imports = true
