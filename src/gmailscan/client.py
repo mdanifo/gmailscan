@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Container, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "EmailMessage",
     "GmailClient",
+    "MessageRef",
     "clients",
     "decode_message",
 ]
@@ -84,6 +85,19 @@ class EmailMessage:
     def html_first(self) -> str:
         """HTML if present, else plain text, else empty."""
         return self.html or self.text or ""
+
+
+@dataclass(frozen=True)
+class MessageRef:
+    """A message as ``messages.list`` returns it: its id and its thread's, nothing more.
+
+    Listing costs 5 quota units for up to 500 of these; reading one message
+    costs 20. A sweep that has already processed most of what its query
+    matches should list, drop what it knows, and read only the rest.
+    """
+
+    id: str
+    threadId: str  # noqa: N815 - Gmail's own field name, as on EmailMessage
 
 
 class GmailClient:
@@ -139,6 +153,32 @@ class GmailClient:
             self._service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         return self._service
 
+    def list_ids(
+        self,
+        query: str,
+        *,
+        after: date | None = None,
+        before: date | None = None,
+        limit: int = 500,
+    ) -> list[MessageRef]:
+        """Every message matching a query, as ids -- none of them read.
+
+        The cheap half of a sweep: 5 quota units per call for up to 500 ids,
+        against 20 to read each message. Use it to find what is new before
+        paying to read it (:meth:`get_message` reads one), or to learn which
+        threads had any mail at all in a window without reading a thread.
+        """
+        refs: list[MessageRef] = []
+        for ref in self._refs(_windowed(query, after, before), lambda: min(500, limit - len(refs))):
+            refs.append(ref)
+            if len(refs) >= limit:
+                break
+        return refs
+
+    def get_message(self, message_id: str, *, headers_only: bool = False) -> EmailMessage:
+        """One message by id, decoded -- the read half of :meth:`list_ids`."""
+        return decode_message(self._read(message_id, headers_only), account=self.account)
+
     def search(
         self,
         query: str,
@@ -147,6 +187,7 @@ class GmailClient:
         before: date | None = None,
         limit: int = 200,
         headers_only: bool = False,
+        skip_ids: Container[str] | None = None,
     ) -> Iterator[EmailMessage]:
         """Yield decoded messages matching a Gmail search query.
 
@@ -157,6 +198,12 @@ class GmailClient:
         ``limit`` is a hard stop rather than a page size: the first sweep of a
         mailbox with years of history would otherwise walk all of it.
 
+        ``skip_ids`` is the next cheapest: ids in it are listed but never read,
+        and do not count toward ``limit``. A sweep that re-reads a window every
+        run passes the ids it has already processed and pays for new mail only.
+        Any container works -- a set, or an object whose ``__contains__`` asks
+        a database.
+
         ``headers_only`` fetches ``format=metadata`` -- sender, subject, date
         and nothing else. Anything surveying a mailbox rather than parsing it
         wants this: full bodies of years of mail are megabytes downloaded to
@@ -165,39 +212,61 @@ class GmailClient:
         Quota section). ``text`` and ``html`` come back None, which is why it is
         not the default.
         """
-        if after is not None:
-            query = f"{query} after:{after.strftime('%Y/%m/%d')}"
-        if before is not None:
-            query = f"{query} before:{before.strftime('%Y/%m/%d')}"
+        query = _windowed(query, after, before)
+        fetched = 0
+        skipped = 0
 
-        fmt = "metadata" if headers_only else "full"
-        extra = {"metadataHeaders": ["From", "To", "Subject", "Date"]} if headers_only else {}
+        # Without skipping, never list more ids than will be read: the ones past
+        # the limit are paid for and dropped. With skipping there is no knowing
+        # how many of a page are new, so take full pages -- a list costs the
+        # same 5 units for one id or 500.
+        def page_size() -> int:
+            return 500 if skip_ids is not None else min(500, limit - fetched)
 
+        for ref in self._refs(query, page_size):
+            if fetched >= limit:
+                break
+            if skip_ids is not None and ref.id in skip_ids:
+                skipped += 1
+                continue
+            fetched += 1
+            yield decode_message(self._read(ref.id, headers_only), account=self.account)
+        if skip_ids is not None:
+            log.debug("search %r: read %d, skipped %d already seen", query, fetched, skipped)
+
+    def _refs(self, query: str, page_size: Callable[[], int]) -> Iterator[MessageRef]:
+        """Walk messages.list for a query, one page per call, through the backoff.
+
+        ``page_size`` is asked before each call for that page's maxResults and
+        the walk stops when it returns zero, so the caller decides both how
+        much to list and when to stop listing.
+        """
         messages = self.service.users().messages()
         page_token: str | None = None
-        fetched = 0
-        while fetched < limit:
-            # Never list more ids than will be fetched: the stubs past the limit
-            # are paid for (a list costs 5 units) and thrown away.
+        while (size := page_size()) > 0:
             response = _with_backoff(
-                messages.list(
-                    userId="me",
-                    q=query,
-                    pageToken=page_token,
-                    maxResults=min(100, limit - fetched),
-                )
+                messages.list(userId="me", q=query, pageToken=page_token, maxResults=size)
             )
             for stub in response.get("messages", []):
-                if fetched >= limit:
-                    break
-                payload = _with_backoff(
-                    messages.get(userId="me", id=stub["id"], format=fmt, **extra)
-                )
-                fetched += 1
-                yield decode_message(payload, account=self.account)
+                yield MessageRef(id=str(stub["id"]), threadId=str(stub.get("threadId", "")))
             page_token = response.get("nextPageToken")
             if not page_token:
                 return
+
+    def _read(self, message_id: str, headers_only: bool) -> dict[str, Any]:
+        """One messages.get, through the backoff, in the format asked for."""
+        messages = self.service.users().messages()
+        if headers_only:
+            request = messages.get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=["From", "To", "Subject", "Date"],
+            )
+        else:
+            request = messages.get(userId="me", id=message_id, format="full")
+        payload: dict[str, Any] = _with_backoff(request)
+        return payload
 
     def get_thread(self, thread_id: str) -> list[EmailMessage]:
         """Every message in a thread, oldest first as Gmail returns them.
@@ -310,6 +379,7 @@ def search_all(
     before: date | None = None,
     limit: int = 200,
     headers_only: bool = False,
+    skip_ids: Container[str] | None = None,
 ) -> Iterator[EmailMessage]:
     """Run one query across every mailbox, tagging each hit with its account.
 
@@ -330,7 +400,12 @@ def search_all(
     for client in targets:
         try:
             yield from client.search(
-                query, after=after, before=before, limit=limit, headers_only=headers_only
+                query,
+                after=after,
+                before=before,
+                limit=limit,
+                headers_only=headers_only,
+                skip_ids=skip_ids,
             )
         except GmailAuthRequired as exc:
             failures.append(client.account)
@@ -361,6 +436,15 @@ def decode_message(payload: dict[str, Any], *, account: str = "") -> EmailMessag
         account=account,
         received=_received(payload.get("internalDate")),
     )
+
+
+def _windowed(query: str, after: date | None, before: date | None) -> str:
+    """Append Gmail's own date operators, so the window is applied server-side."""
+    if after is not None:
+        query = f"{query} after:{after.strftime('%Y/%m/%d')}"
+    if before is not None:
+        query = f"{query} before:{before.strftime('%Y/%m/%d')}"
+    return query
 
 
 def _received(internal_date: Any) -> datetime | None:

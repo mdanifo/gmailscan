@@ -167,6 +167,18 @@ Sizing a sweep:
   own. `limit` is per mailbox and a hard stop.
 - `after=` and `before=` narrow the query on Google's side and are the cheapest
   saving there is: sweep since the last run, not over a fixed window.
+- **Do not re-read what you have already processed.** A sweep that covers a
+  fixed window every run (the last 7 days, the last 90 of Sent) reads the same
+  mail again and again. Pass the ids it has finished with as
+  `search(skip_ids=...)`: they are listed but never read, and do not count
+  toward `limit`. Or call `list_ids()` -- 5 units for up to 500 ids, none of
+  them read -- and `get_message()` only what is new. In October 2026
+  open-job-aggregator's sweep spent about 11,500 units a run re-reading ~209
+  messages and 183 threads it had already handled, and five of its seven and
+  a half minutes waiting on the quota.
+- `list_ids()` also says which threads had any mail in a window, from the
+  `threadId` on each id. That is the cheap way to decide which threads are
+  worth a 40-unit `get_thread()`.
 - `headers_only=True` saves bandwidth, not quota. A metadata get costs the same
   20 units as a full one; it downloads kilobytes instead of megabytes.
 - A thread read costs two message reads. Reading every thread a search turned

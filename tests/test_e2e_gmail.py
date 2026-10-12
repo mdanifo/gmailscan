@@ -132,3 +132,25 @@ def test_status_sees_the_same_grants_a_sweep_would(mailbox, tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["health"]["a@gmail.com"]["state"] == "ok"
     assert report["health"]["dead@gmail.com"]["state"] == "revoked"
+
+
+def test_list_ids_then_read_only_what_is_new(mailbox):
+    """The incremental-sweep pattern, on the wire: one list call, then reads
+    for the unseen ids only."""
+    client = GmailClient("a@gmail.com")
+    refs = client.list_ids("x")
+    assert [(r.id, r.threadId) for r in refs] == [("m1", "t1"), ("m2", "t1"), ("m3", "t2")]
+
+    new = [client.get_message(r.id) for r in refs if r.id not in {"m1", "m2"}]
+    assert [m.subject for m in new] == ["Your order"]
+
+    calls = [r["path"].rsplit("/", 1)[-1] for r in mailbox.gmail_requests()]
+    assert calls == ["messages", "m3"]
+    assert mailbox.gmail_requests()[0]["query"]["maxResults"] == "500"
+
+
+def test_search_with_skip_ids_reads_only_unseen_mail(mailbox):
+    found = list(GmailClient("a@gmail.com").search("x", skip_ids={"m1", "m3"}))
+    assert [m.id for m in found] == ["m2"]
+    calls = [r["path"].rsplit("/", 1)[-1] for r in mailbox.gmail_requests()]
+    assert calls == ["messages", "m2"]

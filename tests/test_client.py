@@ -569,8 +569,8 @@ def test_search_never_lists_more_ids_than_it_will_fetch():
     assert sizes == [3]
 
     sizes.clear()
-    list(GmailClient("a@gmail.com", service=service).search("x", limit=500))
-    assert sizes == [100]
+    list(GmailClient("a@gmail.com", service=service).search("x", limit=2000))
+    assert sizes == [500]  # Gmail's own ceiling for one list call
 
 
 def test_received_comes_from_gmails_own_timestamp():
@@ -628,3 +628,118 @@ def test_an_empty_thread_id_reads_nothing_rather_than_asking_gmail():
             raise AssertionError("no request should be made")
 
     assert GmailClient("a@gmail.com", service=_Explodes()).get_thread("") == []
+
+
+# ------------------------------------------- listing without reading, skipping
+
+
+class _Paged(_FakeMessages):
+    """messages.list with real pagination, recording what each call asked for."""
+
+    def __init__(self, payloads):
+        super().__init__(payloads)
+        self.list_calls: list[dict] = []
+        self.get_calls: list[str] = []
+
+    def list(self, **kw):
+        self.list_calls.append(kw)
+        ids = sorted(self._payloads)
+        start = int(kw.get("pageToken") or 0)
+        size = kw["maxResults"]
+        page = ids[start : start + size]
+        body = {"messages": [{"id": i, "threadId": self._payloads[i]["threadId"]} for i in page]}
+        if start + size < len(ids):
+            body["nextPageToken"] = str(start + size)
+        return _FakeExec(body)
+
+    def get(self, *, userId, id, format, **kw):  # noqa: A002 - mirrors the Google signature
+        self.get_calls.append(id)
+        return super().get(userId=userId, id=id, format=format)
+
+
+def _paged_client(n):
+    payloads = [_payload(msg_id=f"m{i:03d}", thread=f"t{i % 3}") for i in range(n)]
+    service = _FakeService([])
+    service._messages = _Paged(payloads)
+    return GmailClient("a@gmail.com", service=service), service._messages
+
+
+def test_list_ids_reads_nothing_and_carries_the_thread():
+    client, messages = _paged_client(5)
+    refs = client.list_ids("x", after=date(2026, 9, 1))
+    assert [r.id for r in refs] == ["m000", "m001", "m002", "m003", "m004"]
+    assert refs[4].threadId == "t1"
+    assert messages.get_calls == []  # the whole point
+    assert messages.list_calls[0]["q"] == "x after:2026/09/01"
+
+
+def test_list_ids_pages_at_500_and_stops_at_the_limit():
+    client, messages = _paged_client(1200)
+    assert len(client.list_ids("x", limit=1200)) == 1200
+    assert [c["maxResults"] for c in messages.list_calls] == [500, 500, 200]
+
+    messages.list_calls.clear()
+    assert len(client.list_ids("x", limit=3)) == 3
+    assert [c["maxResults"] for c in messages.list_calls] == [3]
+
+
+def test_get_message_reads_one_through_the_backoff(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    request = _RateLimitedOnce(_payload("m9", thread="t9"))
+
+    class _Messages(_FakeMessages):
+        def get(self, **_kw):
+            return request
+
+    service = _FakeService([])
+    service._messages = _Messages([])
+    msg = GmailClient("a@gmail.com", service=service).get_message("m9")
+    assert (msg.id, msg.threadId, msg.account) == ("m9", "t9", "a@gmail.com")
+    assert request.calls == 2
+
+
+def test_skip_ids_are_listed_but_never_read():
+    """A sweep that re-reads a window every run pays for new mail only."""
+    client, messages = _paged_client(5)
+    found = list(client.search("x", skip_ids={"m000", "m002", "m004"}))
+    assert [m.id for m in found] == ["m001", "m003"]
+    assert messages.get_calls == ["m001", "m003"]
+
+
+def test_skipped_ids_do_not_count_toward_the_limit():
+    client, messages = _paged_client(10)
+    known = {f"m{i:03d}" for i in range(8)}
+    found = list(client.search("x", limit=2, skip_ids=known))
+    assert [m.id for m in found] == ["m008", "m009"]
+    assert [c["maxResults"] for c in messages.list_calls] == [500]  # full pages when skipping
+
+
+def test_skip_ids_takes_any_container():
+    """A database-backed lookup works as well as a set."""
+
+    class _AskTheDatabase:
+        def __init__(self):
+            self.asked: list[str] = []
+
+        def __contains__(self, message_id):
+            self.asked.append(message_id)
+            return message_id.endswith("1")
+
+    client, _messages = _paged_client(3)
+    lookup = _AskTheDatabase()
+    assert [m.id for m in client.search("x", skip_ids=lookup)] == ["m000", "m002"]
+    assert lookup.asked == ["m000", "m001", "m002"]
+
+
+def test_search_all_passes_skip_ids_to_every_mailbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    seen = {}
+
+    def search(self, query, **kw):
+        seen[self.account] = kw.get("skip_ids")
+        return iter(())
+
+    monkeypatch.setattr(GmailClient, "search", search)
+    list(search_all("x", skip_ids={"m1"}))
+    assert seen == {"a@gmail.com": {"m1"}}

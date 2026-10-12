@@ -44,6 +44,7 @@ from .auth import (
 from .client import (
     EmailMessage,
     GmailClient,
+    MessageRef,
     clients,
     decode_message,
     dump_path,
@@ -57,6 +58,7 @@ __all__ = [
     "GmailClient",
     "GmailUnavailable",
     "Health",
+    "MessageRef",
     "SCOPES",
     "SETUP_HINT",
     "authorized_accounts",
