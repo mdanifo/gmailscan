@@ -265,8 +265,9 @@ pip install -e ".[dev]"
 ruff check src tests scripts && ruff format --check src tests scripts && mypy && pytest --cov
 ```
 
-CI runs the same on every pull request, on Python 3.10 and 3.12, and fails the
-build under 95% coverage. Three tiers, all offline, all run by default:
+CI runs the same on every pull request, on Python 3.10, 3.12 and 3.14, and
+fails the build under 95% coverage. Three tiers, all offline, all run by
+default:
 
 - **Unit** (`test_auth.py`, `test_client.py`, `test_secrets.py`, `test_cli.py`):
   the Gmail API, google-auth and boto3 faked one object at a time.
