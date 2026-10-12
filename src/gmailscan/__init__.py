@@ -75,4 +75,4 @@ __all__ = [
     "token_path",
 ]
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

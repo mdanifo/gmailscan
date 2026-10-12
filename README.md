@@ -32,14 +32,14 @@ library consumer stays lean, but `gmailscan-auth` uses both: `--account` needs
 `auth`, `--push` needs `secrets`. Installing one leaves the other failing weeks
 later at the moment you reach for it, with the install long forgotten.
 
-A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.1`,
+A project should pin a tag, `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.5.0`,
 and read [CHANGELOG.md](CHANGELOG.md) before deciding a bump can wait.
 
 Every release also carries a wheel. An image should install that: pip alone
 does it, where the git+https form needs git installed and purged again.
 
 ```bash
-pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.4.1/gmailscan-0.4.1-py3-none-any.whl"
+pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.5.0/gmailscan-0.5.0-py3-none-any.whl"
 ```
 
 ### Check the pin in your own tests
@@ -70,7 +70,7 @@ It fails when the pin and the environment disagree (the pin bumped and the venv
 never reinstalled, or the reverse), so old shared code fails your tests instead
 of your sweep. It cannot tell you the pin itself has fallen behind. The
 CHANGELOG can, and so can the line every client logs when it is built:
-`gmailscan 0.4.1 reading <address>`.
+`gmailscan 0.5.0 reading <address>`.
 
 `__version__` has matched the tag since v0.1.5. Earlier tags all report `0.1.0`,
 so this check means nothing below v0.1.5.

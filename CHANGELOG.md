@@ -6,7 +6,33 @@ existed the answer lived in `git log`, which nobody reads before a bump they do
 not know they need: jobpipe sat on v0.1.3 through five releases, including the
 one that fixed its own four-day Gmail outage.
 
-Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.4.1`.
+Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.5.0`.
+
+## v0.5.0 (2026-10-12)
+
+Adds
+
+- `GmailClient.list_ids(query, after=, before=, limit=)`: the ids of the
+  messages a query matches, as `MessageRef(id, threadId)`, none of them read.
+  5 quota units per call for up to 500 ids, against 20 to read each message.
+- `GmailClient.get_message(message_id, headers_only=)`: read one message by
+  id, through the same backoff as everything else.
+- `search(skip_ids=...)` and `search_all(skip_ids=...)`: ids in the container
+  are listed but never read, and do not count toward `limit`. Any container
+  works, a set or an object whose `__contains__` asks a database. This is for
+  sweeps that cover a fixed window every run and were paying to re-read mail
+  they had already processed.
+- `MessageRef` is exported.
+
+Fixes
+
+- `search()` lists up to 500 ids per call (Gmail's ceiling) instead of 100, so
+  a large sweep makes a fifth of the list calls. It still never lists more ids
+  than it will read, unless `skip_ids` is given.
+
+Breaks
+
+- Nothing.
 
 ## v0.4.1 (2026-10-10)
 
