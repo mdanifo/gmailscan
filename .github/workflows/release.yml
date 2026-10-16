@@ -1,16 +1,7 @@
-# Pushing a tag vX.Y.Z publishes the release: the suite runs once more on the
-# tagged commit, the tag is checked against __version__ and the CHANGELOG, and
-# a wheel and sdist are attached to a GitHub release whose notes are that
-# version's CHANGELOG entry.
-#
-# The wheel is the point. Every consumer image used to apt-get install git,
-# pip install from git+https, then purge git again, because python:slim ships
-# no git and a VCS install needs one. A wheel on the release page installs with
-# pip alone and can be hash-pinned.
-#
-# This replaces the by-hand sequence of tag, release, notes that produced two
-# releases so far, and the earlier state where tags existed with no release at
-# all and the repo page called v0.1.0 "Latest" for six weeks.
+# Pushing a tag vX.Y.Z publishes the release: the suite runs on the tagged
+# commit, the tag is checked against __version__ and the CHANGELOG, and a wheel
+# and sdist are attached to a GitHub release whose notes are that version's
+# CHANGELOG entry. The wheel lets a python:slim image install without git.
 name: Release
 
 on:

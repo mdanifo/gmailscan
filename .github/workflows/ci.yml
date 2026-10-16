@@ -1,11 +1,5 @@
-# The consumers (amazon-ledger, open-job-aggregator, virtual-closet) all run CI;
-# the library they share did not, so nothing stood between a red commit and a
-# tag they would pin. This is that something.
-#
-# Three interpreters, each for a reason: 3.10 is the requires-python floor,
-# 3.12 is what the consumer images run (python:3.12-slim), and 3.14 is what the
-# development box runs since its Ubuntu 26.04 upgrade. The suite fakes the
-# Gmail API throughout and needs no credentials.
+# 3.10 is the requires-python floor, 3.12 is what the consumer images run and
+# 3.14 is the development box. The suite needs no network or credentials.
 name: CI
 
 on:

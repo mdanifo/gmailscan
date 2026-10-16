@@ -4,10 +4,9 @@ Nothing in gmailscan is faked here. A token file on disk goes through
 load_credentials, google-auth refreshes it over HTTP, the discovery client
 builds the Gmail service from Google's own discovery document, httplib2 makes
 the calls, and HttpError comes back the way the real API would send it. Only
-the server on the other end is ours (see conftest.FakeGoogle).
-
-This is the tier that would catch a change in google-auth or the discovery
-client that the unit tests' hand-rolled fakes cannot see.
+the server on the other end is ours (see conftest.FakeGoogle). A change in
+google-auth or the discovery client shows up here before the unit tests' fakes
+can see it.
 """
 
 from __future__ import annotations
@@ -59,7 +58,7 @@ def test_a_search_refreshes_the_grant_then_reads_gmail(mailbox, tmp_path):
 
 
 def test_headers_only_and_the_window_reach_the_wire(mailbox):
-    list(
+    found = list(
         GmailClient("a@gmail.com").search(
             "from:shop", after=date(2026, 8, 1), before=date(2026, 9, 1), limit=2, headers_only=True
         )
@@ -71,11 +70,16 @@ def test_headers_only_and_the_window_reach_the_wire(mailbox):
     assert gmail[1]["query"]["format"] == "metadata"
     assert set(gmail[1]["query"]["metadataHeaders"].split(",")) == {"From", "To", "Subject", "Date"}
 
+    # Headers decoded, bodies left None: a metadata response has no parts.
+    assert [m.subject for m in found] == ["Interview", "Re: Interview"]
+    assert found[0].sender == "recruiter@corp.example"
+    assert all(m.text is None and m.html is None for m in found)
+
 
 def test_a_quota_refusal_is_waited_out_not_raised(mailbox, monkeypatch):
     """A real HttpError from the real client, carrying Google's Retry-After, on
-    the first request of the sweep. The sweep must come back whole, having
-    waited exactly what Google asked."""
+    the first request of the sweep. The sweep comes back whole, having waited
+    what Google asked."""
     slept: list[float] = []
     monkeypatch.setattr("time.sleep", slept.append)
     mailbox.refuse_next.append((429, {"Retry-After": "3"}))

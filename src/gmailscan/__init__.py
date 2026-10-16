@@ -1,8 +1,8 @@
-"""gmailscan -- shared read-only Gmail access for the personal projects.
+"""gmailscan: read-only Gmail access shared by the personal projects.
 
     from gmailscan import search_all, authorized_accounts
 
-    # Every authorized mailbox, tagged with which one each hit came from.
+    # Every authorized mailbox, each hit tagged with the one it came from.
     for msg in search_all("from:shipment-tracking@amazon.com", after=date(2026, 8, 1)):
         print(msg.account, msg.subject, msg.html_first[:80])
 
@@ -10,17 +10,12 @@
     for msg in search_all("subject:recruiter", accounts=["you@gmail.com"]):
         print(msg.text_first)
 
-Before this, three projects each carried their own Gmail client -- three token
-lookup orders, two of which reached into a fourth repo's working directory, and
-two separately written consent scripts. This is the single canonical version.
+The scope is ``gmail.readonly``: search and read, no sending, labelling or
+deleting.
 
-The scope is ``gmail.readonly`` and nothing else: search and read, never send,
-modify, label, or delete.
-
-Auth is filesystem-based by default (``~/.config/google-oauth``). The optional
-``gmailscan[secrets]`` extra adds an AWS Secrets Manager store for unattended
-runs that cannot open a browser; ``boto3`` is imported lazily, so callers who
-don't need it never pay for it.
+Tokens live in ``~/.config/google-oauth`` by default. The ``gmailscan[secrets]``
+extra adds an AWS Secrets Manager store for unattended runs; ``boto3`` is
+imported only when that store is used.
 """
 
 from __future__ import annotations

@@ -1,10 +1,9 @@
 """Component tier: the installed command, in its own process.
 
-The unit tests call cli.main() directly. These run ``gmailscan-auth`` the way a
-shell or a cron line does -- through the console-script entry point, with
-environment variables, reading its stdout and exit status -- so what is being
-checked is the packaging and the process contract, not the functions behind
-them. No network: the token in the temp store is valid, so nothing refreshes.
+The unit tests call cli.main() directly. These run ``gmailscan-auth`` as a
+shell or a cron line would: through the entry point, with environment
+variables, reading stdout and the exit status. The token in the temp store is
+valid, so nothing refreshes and no network is needed.
 """
 
 from __future__ import annotations

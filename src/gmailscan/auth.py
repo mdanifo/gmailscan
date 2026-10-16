@@ -1,29 +1,19 @@
-"""Where Gmail tokens live, and how they become usable credentials.
+"""Token files and credentials.
 
-**One canonical store**, ``~/.config/google-oauth/token-<address>.json``. Before
-this package there were three: that path, ``virtual-closet/.sessions/``, and
-whatever ``AMAZON_LEDGER_GMAIL_TOKEN`` / ``JOBPIPE_GMAIL_TOKEN`` pointed at. Two
-projects resolved the third by reaching into a sibling repo's working directory,
-which is not something you can install, pin, or deploy -- and the copies had
-already drifted, so the fallback could serve a token weeks older than the good
-one.
+Tokens are cached per account as ``token-<address>.json``. Lookup order, first
+hit wins:
 
-Resolution order, first hit wins:
-
-1. ``GMAILSCAN_TOKEN`` -- one explicit file, for a single-account caller.
-2. ``GMAILSCAN_TOKEN_DIR`` -- a directory of ``token-<address>.json``. This is
-   how an unattended Lambda points at a writable temp dir it hydrated from
+1. ``GMAILSCAN_TOKEN``: one explicit file, for a single-account caller.
+2. ``GMAILSCAN_TOKEN_DIR``: a directory of ``token-<address>.json``. An
+   unattended run points this at a writable directory it hydrated from
    Secrets Manager (see :mod:`gmailscan.secrets`).
-3. ``~/.config/google-oauth/token-<address>.json`` -- the canonical store.
+3. ``~/.config/google-oauth/``, the default store.
 
-The scope is ``gmail.readonly`` and nothing else. This package can search and
-read mail; it cannot send, modify, label, or delete it. That is structural
-rather than a promise, and :mod:`tests.test_auth` pins it.
+The scope is ``gmail.readonly``; ``tests/test_auth.py`` pins it.
 
-No consent flow runs here. A grant is made once by ``gmailscan-auth`` and cached
-as a token file; if the file is missing or its refresh is rejected, this raises
-:class:`GmailAuthRequired` telling the human what to run. An unattended timer
-must never block on a browser.
+No consent flow runs here. ``gmailscan-auth`` makes the grant once and caches
+it as a token file. When the file is missing or the refresh is rejected,
+:class:`GmailAuthRequired` says what to run.
 """
 
 from __future__ import annotations
@@ -40,14 +30,14 @@ SCOPES = ("https://www.googleapis.com/auth/gmail.readonly",)
 TOKEN_PREFIX = "token-"
 TOKEN_SUFFIX = ".json"
 
-#: The canonical token directory. Everything else is an override.
+#: The default token directory. The environment variables above override it.
 DEFAULT_TOKEN_DIR = Path.home() / ".config" / "google-oauth"
 
 SETUP_HINT = (
     "Authorize the mailbox once with: gmailscan-auth --account <address>. "
     "If this recurs every ~7 days, the Google OAuth consent screen is still in "
-    "Testing mode -- publish it to Production, because Testing-mode refresh "
-    "tokens expire after 7 days and no amount of re-authorizing outlasts that."
+    "Testing mode: publish it to Production. Testing-mode refresh tokens expire "
+    "after 7 days, and re-authorizing does not change that."
 )
 
 
@@ -78,9 +68,8 @@ def token_path(account: str) -> Path:
 def authorized_accounts() -> list[str]:
     """Every Gmail address with a cached token, sorted.
 
-    This is what makes "scan both mailboxes" the default rather than a thing
-    each project reimplements. ``GMAILSCAN_ACCOUNTS`` pins the list instead --
-    a project that deliberately reads one mailbox sets it and stops discovering.
+    ``GMAILSCAN_ACCOUNTS`` (comma-separated) pins the list instead of
+    discovering it; set it when a project should read one mailbox only.
     """
     pinned = os.environ.get("GMAILSCAN_ACCOUNTS", "").strip()
     if pinned:
@@ -96,10 +85,11 @@ def authorized_accounts() -> list[str]:
 
 
 def is_configured(account: str | None = None) -> bool:
-    """Whether a read could run, without importing the Google libraries.
+    """Whether a token file exists, without importing the Google libraries.
 
-    A UI asks this to decide between offering a sync and explaining how to set
-    one up, so it must not blow up on a machine that has never seen a token.
+    Safe to call from a UI on a machine that has never seen a token. A revoked
+    grant leaves its file behind, so this says nothing about whether the grant
+    still works; :func:`health` does.
     """
     if account:
         return token_path(account).exists()
@@ -110,39 +100,28 @@ Health = Literal["missing", "configured", "expired", "revoked", "ok"]
 
 
 def health(account: str, *, path: Path | None = None) -> Health:
-    """Whether ``account``'s grant actually works, refreshing it to find out.
+    """Whether ``account``'s grant works, refreshing it to find out.
 
-    :func:`is_configured` checks that a token file exists, and a revoked grant
-    leaves its file behind -- so it goes on answering True for a mailbox that
-    reads nothing, and a sweep that cannot read looks like one that found
-    nothing. It stays a file check, because callers rely on it never touching
-    the network. This is the check that does.
-
-    - ``"missing"`` -- no token file.
-    - ``"configured"`` -- a token exists but its health could not be checked:
-      the Google libraries are not installed, or the refresh failed for a
-      reason that says nothing about the grant (network down, a retryable
-      server error). The same thing ``is_configured`` knows, and no more.
-    - ``"expired"`` -- the file cannot renew itself: no refresh token, or not
-      an authorized-user file at all. Dead now, or within the hour.
-    - ``"revoked"`` -- Google refused the refresh. Revocation and a Testing-mode
-      grant past its 7 days come back as the same ``invalid_grant``, so this
-      does not pretend to tell them apart.
-    - ``"ok"`` -- usable now. A refreshed token is written back, exactly as
-      :func:`load_credentials` would.
+    - ``"missing"``: no token file.
+    - ``"configured"``: a token exists but could not be checked (google-auth
+      not installed, no network, or a retryable server error). Not a reason
+      to re-authorize.
+    - ``"expired"``: the file cannot renew itself: no refresh token, or not an
+      authorized-user file at all.
+    - ``"revoked"``: Google refused the refresh. Revocation and a Testing-mode
+      grant past its 7 days both come back as ``invalid_grant``.
+    - ``"ok"``: usable now. A refreshed token is written back.
 
     Never raises. ``path`` overrides discovery, as for :func:`load_credentials`.
-    :func:`health_detail` returns the same verdict with the reason attached.
     """
     return health_detail(account, path=path)[0]
 
 
 def health_detail(account: str, *, path: Path | None = None) -> tuple[Health, str]:
-    """:func:`health`, plus one line saying why -- for a status screen or a log.
+    """:func:`health` plus one line saying why, for a status screen or a log.
 
-    The detail is for a person: the path that is missing, Google's own error
-    text for a refused refresh, ``"refreshed"`` or ``"valid"`` for ok. Code
-    should branch on the state, never on the detail.
+    The detail is for a person (the missing path, Google's error text,
+    ``"refreshed"`` or ``"valid"``). Branch on the state, not the detail.
     """
     path = path or token_path(account)
     if not path.exists():
@@ -179,12 +158,10 @@ def health_detail(account: str, *, path: Path | None = None) -> tuple[Health, st
 
 
 def persist_token(path: Path, json_text: str) -> None:
-    """Write a refreshed token back, when the filesystem allows it.
+    """Write a refreshed token back, if the filesystem allows it.
 
-    Some callers mount the grant read-only so a container cannot mutate the
-    shared file. A refresh still yields a usable in-memory credential, and
-    failing the whole run because that file cannot be updated would make the
-    read-only mount a footgun rather than a safety measure.
+    A token mounted read-only into a container still refreshes in memory, so a
+    failed write-back is logged and the run goes on.
     """
     try:
         path.write_text(json_text, encoding="utf-8")
@@ -198,14 +175,11 @@ def persist_token(path: Path, json_text: str) -> None:
 
 
 def load_credentials(account: str, *, path: Path | None = None) -> Any:
-    """Usable credentials for ``account``, refreshing and writing back if needed.
+    """Usable credentials for ``account``, refreshed and written back if needed.
 
-    ``path`` overrides where the token is read from, for a consumer that still
-    honours its own pre-gmailscan configuration. Without it, discovery is
-    :func:`token_path`.
-
-    Every failure mode reports the fix, because the thing reading this is
-    usually a log from a 3am timer with nobody watching.
+    ``path`` overrides where the token is read from, for a consumer that keeps
+    its own token setting; the default is :func:`token_path`. Each failure
+    names the fix, since the reader is usually a log from an overnight timer.
     """
     try:
         from google.auth.transport.requests import Request
@@ -220,15 +194,13 @@ def load_credentials(account: str, *, path: Path | None = None) -> Any:
         raise GmailAuthRequired(f"No Gmail token for {account} at {path}. {SETUP_HINT}")
 
     try:
-        # google-auth ships no annotations for this constructor, so strict mode
-        # sees an untyped call into a typed context.
+        # google-auth ships no annotations for this constructor.
         creds = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call, unused-ignore]
             str(path), list(SCOPES)
         )
     except ValueError as exc:
-        # A token file with no refresh_token parses as invalid here rather than
-        # failing later. Say so with the fix attached: an access token alone
-        # works for an hour and then dies inside an overnight timer.
+        # google-auth rejects a file with no refresh_token here. Say so, with
+        # the fix.
         raise GmailAuthRequired(
             f"Gmail token at {path} is not a usable authorized-user file ({exc}). {SETUP_HINT}"
         ) from exc
@@ -239,10 +211,9 @@ def load_credentials(account: str, *, path: Path | None = None) -> Any:
         raise GmailAuthRequired(
             f"Gmail token at {path} has no refresh token, so it cannot be renewed. {SETUP_HINT}"
         )
-    # Not "if expired": a file holding a refresh token but no access token --
-    # one hydrated from a store that kept only the grant -- is neither valid
-    # nor expired, and used to be reported as having no refresh token at all.
-    # Anything that is not valid and can be refreshed, is.
+    # A file holding a refresh token but no access token (hydrated from a store
+    # that kept only the grant) is neither valid nor expired. Refresh anything
+    # that is not valid.
     try:
         creds.refresh(Request())
     except Exception as exc:

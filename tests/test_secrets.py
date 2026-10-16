@@ -1,7 +1,7 @@
-"""The optional AWS token store, with boto3 mocked entirely.
+"""The optional AWS token store, with boto3 faked entirely.
 
-These assert the properties that matter for an unattended run: it fails loudly
-rather than scanning nothing, and pushing one account never drops the other.
+What matters for an unattended run: a bad secret fails the run instead of
+sweeping nothing, and pushing one account keeps the other's grant.
 """
 
 from __future__ import annotations
@@ -56,17 +56,27 @@ def _token_doc(account="a@gmail.com"):
     return {account: {"refresh_token": "r", "client_id": "c"}}
 
 
-def test_importing_gmailscan_never_requires_boto3():
-    """The lazy import is the point: filesystem callers must not need AWS."""
-    import gmailscan
+def test_importing_the_package_needs_neither_extra():
+    """Reading mail from a token file has to work with boto3 and
+    google-auth-oauthlib absent, so both are imported only where used. Run in
+    a fresh interpreter with the two blocked."""
+    import subprocess
+    import sys
 
-    assert "boto3" not in str(gmailscan.__doc__ or "") or True
-    source = secrets_mod.__file__ or ""
-    assert source.endswith("secrets.py")
-    # boto3 is imported inside _client, never at module scope.
-    with open(source, encoding="utf-8") as fh:
-        head = "".join(fh.readlines()[:30])
-    assert "import boto3" not in head
+    code = "\n".join(
+        [
+            "import sys",
+            "for name in ('boto3', 'google_auth_oauthlib', 'google_auth_oauthlib.flow'):",
+            "    sys.modules[name] = None",
+            "import gmailscan, gmailscan.secrets, gmailscan.cli",
+            "print(gmailscan.authorized_accounts(), gmailscan.is_configured())",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[] False"
 
 
 def test_hydrate_writes_every_account(monkeypatch, tmp_path):
@@ -87,6 +97,26 @@ def test_hydrate_skips_metadata_keys(monkeypatch, tmp_path):
     _install(monkeypatch, fake)
     assert secrets_mod.hydrate_tokens() == ["a@gmail.com"]
     assert not (tmp_path / "tokens" / "token-_meta.json").exists()
+
+
+def test_hydrate_normalizes_accounts_so_discovery_finds_them(monkeypatch):
+    """The secret's key and the token filename have to agree on case and
+    whitespace, or is_configured() says no for a mailbox just hydrated."""
+    from gmailscan import auth
+
+    _install(monkeypatch, _FakeSecrets({" A@Gmail.com ": {"refresh_token": "r"}}))
+    assert secrets_mod.hydrate_tokens() == ["a@gmail.com"]
+    assert auth.authorized_accounts() == ["a@gmail.com"]
+    assert auth.is_configured("A@Gmail.com") is True
+
+
+def test_hydrate_skips_a_payload_that_is_not_a_token_document(monkeypatch, tmp_path):
+    """A corrupt value would otherwise land on disk as a token file and fail
+    later, far from the cause."""
+    _install(monkeypatch, _FakeSecrets({"a@gmail.com": "not a token document"}))
+    with pytest.raises(GmailAuthRequired, match="no account tokens"):
+        secrets_mod.hydrate_tokens()
+    assert list((tmp_path / "tokens").glob("token-*.json")) == []
 
 
 def test_hydrate_of_an_empty_secret_raises(monkeypatch):
@@ -116,8 +146,7 @@ def test_hydrated_tokens_are_owner_only(monkeypatch, tmp_path):
 
 
 def test_push_merges_rather_than_replaces(monkeypatch, tmp_path):
-    """Pushing one account must not delete the other's grant from the secret --
-    that is exactly what would leave a scheduled sweep reading one mailbox."""
+    """Pushing one account leaves the other account's grant in the secret."""
     tokens = tmp_path / "tokens"
     tokens.mkdir(parents=True)
     (tokens / "token-a@gmail.com.json").write_text(json.dumps({"refresh_token": "new-a"}))
@@ -166,8 +195,7 @@ def test_read_meta_never_raises(monkeypatch):
 
 
 def test_push_only_creates_the_secret_when_it_is_missing(monkeypatch, tmp_path):
-    """Falling back to create_secret on any error turned an AccessDenied on the
-    put into 'secret already exists' from the create -- the wrong problem."""
+    """An AccessDenied on the put is raised as is, not retried as a create."""
     from gmailscan import auth
 
     path = auth.token_path("a@gmail.com")
@@ -186,7 +214,8 @@ def test_push_only_creates_the_secret_when_it_is_missing(monkeypatch, tmp_path):
 
 
 def test_push_recognises_botocores_not_found_shape(monkeypatch, tmp_path):
-    """boto3 raises ClientError with the code in .response, not in the message."""
+    """boto3's ClientError carries the code in .response; the message alone
+    does not say which error it was."""
     from gmailscan import auth
 
     path = auth.token_path("a@gmail.com")

@@ -5,8 +5,8 @@
 GitHub renders a newline inside a paragraph as a line break, so the CHANGELOG's
 80-column wrapping would come out ragged on the release page; paragraphs and
 list items are joined back into single lines here. Exits non-zero when the
-version has no entry, which is how the release workflow insists the CHANGELOG
-was written before the tag.
+version has no entry, so the release workflow refuses a tag the CHANGELOG does
+not cover.
 """
 
 from __future__ import annotations

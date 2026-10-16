@@ -1,10 +1,6 @@
 # Changelog
 
-One entry per release, saying what it fixes and what it breaks, because that is
-the whole question when deciding whether a bump can wait. Until this file
-existed the answer lived in `git log`, which nobody reads before a bump they do
-not know they need: jobpipe sat on v0.1.3 through five releases, including the
-one that fixed its own four-day Gmail outage.
+One entry per release: what it fixes, what it adds, what it breaks.
 
 Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.5.0`.
 
@@ -112,8 +108,7 @@ Fixes
 
 - `get_thread()` and `raw()` wait out Gmail's per-minute quota the way
   `search()` has since v0.2.0. On v0.2.x one quota refusal on a thread read
-  raised at once: the 2026-09-13 outreach sweep lost about six thread reads that
-  way while its searches rode straight through.
+  raised at once.
 
 Adds
 
@@ -148,8 +143,8 @@ Breaks
 
 ## v0.2.0 (2026-09-05)
 
-**The release that fixed jobpipe's four-day outage.** Take v0.2.1 instead:
-this one's backoff gives up before the quota window resets.
+Take v0.2.1 instead: this one's backoff gives up before the quota window
+resets.
 
 Fixes
 

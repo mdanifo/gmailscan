@@ -133,16 +133,58 @@ def test_decode_survives_a_message_with_no_body():
     assert msg.text_first == "" and msg.html_first == ""
 
 
+def test_decode_keeps_the_outer_body_of_a_forwarded_message():
+    """A forwarded message carries the forwarder's text/plain part and the
+    original's inside a message/rfc822 part. The first one seen is the
+    message; the inner one must not overwrite it."""
+    payload = {
+        "id": "m4",
+        "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Fwd: offer"}],
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": _b64("outer")}},
+                {
+                    "mimeType": "message/rfc822",
+                    "parts": [
+                        {"mimeType": "text/plain", "body": {"data": _b64("inner")}},
+                        {"mimeType": "text/html", "body": {"data": _b64("<p>inner</p>")}},
+                    ],
+                },
+            ],
+        },
+    }
+    msg = decode_message(payload)
+    assert msg.text == "outer"
+    assert msg.html == "<p>inner</p>"  # the only HTML part, wherever it sits
+
+
+def test_email_message_field_order_is_part_of_the_api():
+    """Positional callers rely on the order. Reordering a field is a breaking
+    change and belongs in the CHANGELOG, not in a refactor."""
+    from dataclasses import fields
+
+    assert [f.name for f in fields(EmailMessage)] == [
+        "id",
+        "subject",
+        "sender",
+        "date",
+        "text",
+        "html",
+        "threadId",
+        "to",
+        "account",
+        "received",
+    ]
+    positional = EmailMessage("1", "s", "f", "d", "plain", "<p>rich</p>", "t9")
+    assert (positional.text, positional.html, positional.threadId) == ("plain", "<p>rich</p>", "t9")
+
+
 # ------------------------------------------------- the body-preference split
 
 
 def test_no_ambiguous_body_attribute():
-    """The two source projects disagreed about what `body` meant.
-
-    open-job-aggregator preferred plain text (recruiter prose); virtual-closet
-    preferred HTML (order tables). Shipping either as `body` would silently
-    change what one of them reads, so neither is shipped.
-    """
+    """Callers choose text_first or html_first; a `body` would hide the choice."""
     assert not hasattr(EmailMessage(id="1", subject="s", sender="f", date="d"), "body")
 
 
@@ -191,7 +233,7 @@ def test_search_limit_is_a_hard_stop():
 
 
 def test_a_client_logs_which_gmailscan_it_is(caplog):
-    """jobpipe ran v0.1.3 through five releases and no log line said so."""
+    """A consumer's own log names the release it runs."""
     import logging
 
     import gmailscan
@@ -258,6 +300,20 @@ def test_search_all_tags_each_hit_with_its_mailbox(monkeypatch, tmp_path):
     assert sorted(accounts) == ["a@gmail.com", "b@gmail.com"]
 
 
+def test_search_all_limit_applies_per_mailbox(monkeypatch, tmp_path):
+    """Adding a mailbox must not eat into another's share of the limit."""
+    monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
+    _write_token(tmp_path, "a@gmail.com")
+    _write_token(tmp_path, "b@gmail.com")
+    monkeypatch.setattr(
+        "gmailscan.client.GmailClient.service",
+        property(lambda self: _FakeService([_payload(msg_id=f"m{i}") for i in range(3)])),
+    )
+    accounts = [m.account for m in search_all("x", limit=2)]
+    assert accounts.count("a@gmail.com") == 2
+    assert accounts.count("b@gmail.com") == 2
+
+
 def test_dump_path_is_unique_per_mailbox():
     """The same message id can exist in both mailboxes; one dump must not
     overwrite the other."""
@@ -280,11 +336,8 @@ def _dead(account):
 
 
 def test_a_dead_mailbox_does_not_blind_the_healthy_one(monkeypatch, tmp_path, caplog):
-    """Tokens expire per account. With the consent screen in Testing they expire
-    every 7 days, and in practice one address goes stale while the other is
-    fine -- which is the live situation this was written in. Aborting the sweep
-    on the first bad mailbox would hide the good one's mail entirely.
-    """
+    """Tokens expire per account, so one mailbox can be dead while the other
+    is fine. The sweep reads the live one and logs the dead one."""
     monkeypatch.setenv("GMAILSCAN_TOKEN_DIR", str(tmp_path))
     _write_token(tmp_path, "alive@gmail.com")
     _write_token(tmp_path, "dead@gmail.com")
@@ -323,8 +376,8 @@ def test_every_mailbox_failing_still_raises(monkeypatch, tmp_path):
 
 
 def test_headers_only_asks_gmail_for_metadata(monkeypatch):
-    """Surveying a mailbox must not download years of bodies to read one header
-    off each -- that is what exhausted the per-minute quota."""
+    """A survey should not download years of bodies to read one header off
+    each."""
     captured = {}
 
     class _Recording(_FakeMessages):
@@ -358,8 +411,7 @@ def test_full_fetch_is_still_the_default():
 
 
 def test_rate_limit_is_retried_not_raised(monkeypatch):
-    """Gmail meters by query cost per user per minute and a survey reaches it in
-    seconds. The 403 says rateLimitExceeded and clears on its own."""
+    """The 403 that says rateLimitExceeded clears on its own."""
     from googleapiclient.errors import HttpError
 
     from gmailscan import client as client_mod
@@ -384,7 +436,7 @@ def test_rate_limit_is_retried_not_raised(monkeypatch):
 
 
 def test_a_real_permission_error_is_not_retried(monkeypatch):
-    """A revoked grant must surface at once, not after six sleeps."""
+    """A revoked grant surfaces at once."""
     from googleapiclient.errors import HttpError
 
     from gmailscan import client as client_mod
@@ -408,9 +460,7 @@ def test_a_real_permission_error_is_not_retried(monkeypatch):
 
 
 def test_backoff_can_outlast_a_one_minute_quota_window(monkeypatch):
-    """Gmail meters per MINUTE. A backoff that gives up inside sixty seconds
-    cannot outlast the window it is waiting on -- the first version topped out
-    at ~14s after six tries and died mid-scan with the quota about to reset."""
+    """Gmail meters per minute, so the total wait has to exceed sixty seconds."""
     from googleapiclient.errors import HttpError
 
     from gmailscan import client as client_mod
@@ -435,9 +485,117 @@ def test_backoff_can_outlast_a_one_minute_quota_window(monkeypatch):
     assert sum(slept) > 60, f"gives up after only {sum(slept):.0f}s of waiting"
 
 
+def test_backoff_stops_after_nine_attempts_with_each_wait_capped(monkeypatch):
+    """The documented bounds: nine attempts, no wait over 90 s. The late waits
+    are the capped 90 s with full jitter, so at least 45 s."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    class _Resp:
+        status = 503
+        reason = "Service Unavailable"
+
+        def get(self, _k):
+            return None
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            raise HttpError(_Resp(), b"{}")
+
+    with pytest.raises(HttpError):
+        client_mod._with_backoff(_Req())
+
+    assert calls["n"] == 9
+    assert len(slept) == 8
+    assert max(slept) <= 90.0
+    assert slept[-1] >= 45.0
+
+
+def test_a_retry_after_longer_than_two_minutes_is_clamped(monkeypatch):
+    """A bad header must not park the run for an hour."""
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    slept = []
+    monkeypatch.setattr("time.sleep", slept.append)
+
+    class _Resp:
+        status = 429
+        reason = "Too Many Requests"
+
+        def get(self, key):
+            return "3600" if key == "retry-after" else None
+
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise HttpError(_Resp(), b"{}")
+            return {"ok": True}
+
+    assert client_mod._with_backoff(_Req()) == {"ok": True}
+    assert slept == [120.0]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "retried"),
+    [
+        (429, b"{}", True),
+        (500, b"{}", True),
+        (502, b"{}", True),
+        (503, b"{}", True),
+        (504, b"{}", True),
+        (403, b'{"error":{"message":"quotaExceeded"}}', True),
+        (403, b'{"error":{"message":"insufficientPermissions"}}', False),
+        (400, b'{"error":{"message":"rateLimitExceeded"}}', False),
+        (404, b"{}", False),
+        (401, b"{}", False),
+    ],
+)
+def test_only_rate_limits_and_server_errors_are_retried(monkeypatch, status, body, retried):
+    from googleapiclient.errors import HttpError
+
+    from gmailscan import client as client_mod
+
+    monkeypatch.setattr("time.sleep", lambda _: None)
+
+    class _Resp:
+        reason = "x"
+
+        def get(self, _k):
+            return None
+
+    _Resp.status = status
+    calls = {"n": 0}
+
+    class _Req:
+        def execute(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise HttpError(_Resp(), body)
+            return {"ok": True}
+
+    if retried:
+        assert client_mod._with_backoff(_Req()) == {"ok": True}
+        assert calls["n"] == 2
+    else:
+        with pytest.raises(HttpError):
+            client_mod._with_backoff(_Req())
+        assert calls["n"] == 1
+
+
 def test_backoff_obeys_retry_after_when_google_sends_one(monkeypatch):
-    """Believe the server over a guess -- clamped, so a bad header cannot
-    stall a run for hours."""
+    """Google's Retry-After wins over the computed delay."""
     from googleapiclient.errors import HttpError
 
     from gmailscan import client as client_mod
@@ -489,9 +647,7 @@ class _RateLimitedOnce:
 
 
 def test_get_thread_rides_out_a_rate_limit(monkeypatch):
-    """The outreach sync reads whole threads. v0.2.1 retried search() but called
-    threads.get bare, so the 2026-09-13 sweep lost ~6 thread reads to the same
-    per-minute quota that search() rode straight through."""
+    """threads.get goes through the same retry as messages.list."""
     monkeypatch.setattr("time.sleep", lambda _: None)
     request = _RateLimitedOnce({"messages": [_payload("m1"), _payload("m2")]})
 
@@ -523,10 +679,8 @@ def test_raw_rides_out_a_rate_limit(monkeypatch):
 
 
 def test_no_request_bypasses_the_backoff():
-    """search() got the backoff and the two methods beside it did not, which is
-    how a quota refusal kept costing thread reads on the version that fixed it.
-    The next method added here must not repeat that: _with_backoff is the only
-    place a Gmail request may be executed."""
+    """_with_backoff is the only place a Gmail request may be executed, so a
+    new method cannot skip the retry by accident."""
     import inspect
 
     from gmailscan import client as client_mod
@@ -555,7 +709,7 @@ def test_search_applies_the_before_filter():
 
 def test_search_never_lists_more_ids_than_it_will_fetch():
     """A list call costs 5 units whatever it returns, but ids past the limit
-    are paid for and dropped; ask for exactly what is left."""
+    are paid for and dropped; ask for what is left."""
     sizes = []
 
     class _Recording(_FakeMessages):
@@ -669,7 +823,7 @@ def test_list_ids_reads_nothing_and_carries_the_thread():
     refs = client.list_ids("x", after=date(2026, 9, 1))
     assert [r.id for r in refs] == ["m000", "m001", "m002", "m003", "m004"]
     assert refs[4].threadId == "t1"
-    assert messages.get_calls == []  # the whole point
+    assert messages.get_calls == []  # nothing read
     assert messages.list_calls[0]["q"] == "x after:2026/09/01"
 
 

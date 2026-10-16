@@ -16,12 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Only for the AWS Secrets Manager token store, which is how an unattended
-# Lambda gets a grant it cannot run a consent flow for. Filesystem callers do
-# not need boto3 and should not install it.
+# The AWS Secrets Manager token store, for unattended runs. Reading mail from
+# a token file needs neither extra.
 secrets = ["boto3>=1.28"]
-# The consent flow. Needed once per account by `gmailscan-auth`, never by a
-# project that only reads mail, so it stays out of the runtime dependencies.
+# The consent flow, used by gmailscan-auth.
 auth = ["google-auth-oauthlib>=1.0"]
 dev = [
     "pytest>=7",
@@ -40,10 +38,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Three tiers. Unit tests fake the Gmail API one object at a time; the
-# component tier runs the installed command in its own process; the e2e tier
-# runs the real client stack against a fake Google (tests/conftest.py). All
-# three run by default and need no network: `pytest -m e2e` picks one out.
+# All tiers run by default and need no network. `pytest -m e2e` picks one out.
 markers = [
     "component: the gmailscan-auth command run as a subprocess",
     "e2e: the real google-auth and discovery client stack against a local fake Google",
@@ -54,8 +49,8 @@ source = ["gmailscan"]
 
 [tool.coverage.report]
 show_missing = true
-# What is left uncovered is import guards for optional dependencies that are
-# always installed in the test environment, each marked where it lives.
+# The only lines left out are import guards for the optional extras, which the
+# test environment has installed.
 fail_under = 95
 
 [tool.setuptools.package-data]
@@ -71,6 +66,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 strict = true
 files = ["src", "scripts"]
-# google-auth and the discovery client ship no stubs; everything from them is
-# Any here, and the public surface narrows it where a caller would notice.
+# google-auth and the discovery client ship no stubs.
 ignore_missing_imports = true

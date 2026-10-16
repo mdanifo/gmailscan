@@ -1,10 +1,9 @@
-"""Shared fixtures. The important one is a fake Google.
+"""Shared fixtures, including a fake Google.
 
-The unit tests fake the Gmail API one object at a time. The end-to-end tier
-instead runs the real stack -- token file, google-auth refresh over HTTP, the
-discovery client, httplib2 -- against a local server that speaks just enough of
-oauth2.googleapis.com and gmail.googleapis.com for what this package does. It
-records every request, so a test can assert what was actually sent.
+The end-to-end tier runs the real stack (token file, google-auth refresh over
+HTTP, the discovery client, httplib2) against a local server that speaks just
+enough of oauth2.googleapis.com and gmail.googleapis.com for this package. It
+records every request, so a test can assert what was sent.
 """
 
 from __future__ import annotations
@@ -127,8 +126,8 @@ class FakeGoogle:
                 record = {
                     "method": self.command,
                     "path": url.path,
-                    # A repeated parameter (metadataHeaders=From&metadataHeaders=To)
-                    # is kept whole, comma-joined, the way a test wants to read it.
+                    # Repeated parameters (metadataHeaders=From&metadataHeaders=To)
+                    # are comma-joined.
                     "query": {k: ",".join(v) for k, v in parse_qs(url.query).items()},
                     "authorization": self.headers.get("Authorization", ""),
                     "body": body.decode(),
@@ -268,16 +267,14 @@ def real_client_stack(fake_google, monkeypatch):
     """Point the real discovery client at the fake Google.
 
     GmailClient.service calls googleapiclient.discovery.build; this swaps in a
-    build from the shipped Gmail discovery document with its root URL rewritten,
-    so every other layer -- credentials, httplib2, error handling -- is real.
+    build from the shipped Gmail discovery document with its root URL rewritten.
+    Every other layer (credentials, httplib2, error handling) is real.
     """
     from google.oauth2 import credentials as oauth2_credentials
     from googleapiclient import discovery
 
-    # google-auth ignores the token_uri in an authorized-user file and always
-    # refreshes against Google ("so account can be refreshed", its comment
-    # says). Without this the first version of these tests sent a made-up
-    # refresh token to oauth2.googleapis.com, which answered invalid_client.
+    # google-auth ignores the token_uri in an authorized-user file and refreshes
+    # against its own constant, so the constant is pointed at the fake.
     assert hasattr(oauth2_credentials, "_GOOGLE_OAUTH2_TOKEN_ENDPOINT"), (
         "google-auth renamed the token endpoint constant; find where "
         "from_authorized_user_info gets its token_uri and patch that"
@@ -297,7 +294,7 @@ def real_client_stack(fake_google, monkeypatch):
 def write_authorized_user(
     directory, account: str, fake: FakeGoogle, *, refresh_token: str, expiry: str = PAST
 ):
-    """A token file exactly as gmailscan-auth would leave it, pointed at the fake."""
+    """A token file as gmailscan-auth would leave it, pointed at the fake."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"token-{account}.json"
     path.write_text(

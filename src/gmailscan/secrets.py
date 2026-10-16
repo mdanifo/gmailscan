@@ -1,18 +1,17 @@
-"""Optional AWS Secrets Manager token store, for unattended runs.
+"""AWS Secrets Manager token store, for unattended runs.
 
-Requires the ``secrets`` extra (``pip install "gmailscan[secrets]"``). ``boto3``
-is imported lazily inside the functions, so importing :mod:`gmailscan` never
-requires AWS credentials or the library -- only actually touching a secret does.
+Needs the ``secrets`` extra (``pip install "gmailscan[secrets]"``). ``boto3``
+is imported inside the functions, so importing :mod:`gmailscan` needs neither
+the library nor AWS credentials.
 
-Why this exists: the consent flow writes a token to a machine-local file, but a
-Lambda or a scheduled container has no such file and cannot open a browser to
-make one. It pulls the grant from a secret instead, writes it into a writable
-directory, and points ``GMAILSCAN_TOKEN_DIR`` there -- after which everything in
-:mod:`gmailscan.auth` works unchanged and knows nothing about AWS.
+A Lambda or scheduled container has no token file and cannot open a browser.
+It calls :func:`hydrate_tokens` at startup, which writes every grant in the
+secret into ``GMAILSCAN_TOKEN_DIR``; :mod:`gmailscan.auth` then works
+unchanged.
 
-The secret is a JSON object keyed by email address, whose values are token
-documents. Keys beginning with ``_`` are metadata rather than accounts --
-``_meta`` carries ``granted_at``, which is what a token-expiry reminder reads.
+The secret is a JSON object keyed by email address, each value a token
+document. Keys beginning with ``_`` are metadata: ``_meta.granted_at`` is what
+a token-expiry reminder reads.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ __all__ = [
 
 DEFAULT_SECRET_NAME = "gmail-tokens"
 
-#: Metadata rather than an account. Holds ``granted_at`` for expiry reminders.
+#: The metadata key. Holds ``granted_at`` for expiry reminders.
 META_KEY = "_meta"
 
 
@@ -70,9 +69,8 @@ def hydrate_tokens(
     """Write every token in the secret into the token directory.
 
     Returns the accounts written. Raises :class:`GmailAuthRequired` when the
-    secret is missing, empty, or holds only metadata, so an unattended run fails
-    loudly rather than quietly scanning nothing -- a silent zero-result sweep
-    looks identical to a mailbox with no new mail.
+    secret is missing, empty or metadata-only, so an unattended run fails
+    instead of sweeping nothing.
     """
     tokens = _read_secret(secret_name, region)
     if not tokens:
@@ -105,11 +103,10 @@ def push_tokens(
     region: str | None = None,
     granted_at: str | None = None,
 ) -> list[str]:
-    """Upload local token files into the secret, for unattended runs to hydrate.
+    """Upload local token files into the secret.
 
-    Merges rather than replaces: pushing one account must not delete the other's
-    grant from the secret, which is exactly the mistake that would leave a
-    scheduled sweep reading one mailbox instead of two.
+    Merges into what is already there: pushing one account leaves the other
+    accounts' grants in place.
     """
     from .auth import authorized_accounts, token_path
 
@@ -145,9 +142,8 @@ def push_tokens(
     try:
         client.put_secret_value(SecretId=secret_name, SecretString=body)
     except Exception as exc:
-        # Only a missing secret is a reason to create one. Falling back on any
-        # error turned an AccessDenied on the put into "secret already exists"
-        # from the create, which points the reader at the wrong problem.
+        # Create only when the put says the secret does not exist. Any other
+        # error (AccessDenied, say) is the real problem and is raised as is.
         if not _is_not_found(exc):
             raise
         client.create_secret(Name=secret_name, SecretString=body)
@@ -155,8 +151,7 @@ def push_tokens(
 
 
 def _is_not_found(exc: Exception) -> bool:
-    """botocore's ClientError carries the code in ``response``; match on that,
-    and on the message for anything that is not botocore."""
+    """botocore puts the error code in ``response``; fall back to the message."""
     response = getattr(exc, "response", None)
     code = response.get("Error", {}).get("Code", "") if isinstance(response, dict) else ""
     return "ResourceNotFound" in code or "ResourceNotFound" in str(exc)
@@ -165,10 +160,9 @@ def _is_not_found(exc: Exception) -> bool:
 def read_meta(
     *, secret_name: str = DEFAULT_SECRET_NAME, region: str | None = None
 ) -> dict[str, Any]:
-    """The ``_meta`` object from the secret, or ``{}`` if absent or unreadable.
+    """The ``_meta`` object from the secret, or ``{}`` when absent or unreadable.
 
-    Unlike the rest of this module this never raises: a missing reminder
-    timestamp should not take down the run it is attached to.
+    Never raises: a missing reminder timestamp should not take down the run.
     """
     try:
         tokens = _read_secret(secret_name, region)
@@ -179,7 +173,7 @@ def read_meta(
 
 
 def token_documents() -> dict[str, Path]:
-    """Local token files by account -- what :func:`push_tokens` would upload."""
+    """Local token files by account: what :func:`push_tokens` would upload."""
     from .auth import authorized_accounts, token_path
 
     return {a: token_path(a) for a in authorized_accounts() if token_path(a).exists()}

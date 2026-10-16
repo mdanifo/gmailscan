@@ -1,22 +1,16 @@
-"""``gmailscan-auth`` -- authorize a mailbox, and check the ones already granted.
+"""``gmailscan-auth``: authorize a mailbox, and check the ones already granted.
 
-Replaces two independently written ``setup_gmail_auth.py`` scripts that had
-drifted in flags, defaults and documentation.
-
-    gmailscan-auth --status                      # what is authorized, and healthy?
+    gmailscan-auth --status                      # what is authorized, and does it still work?
     gmailscan-auth --account you@gmail.com --manual --client-secret-file ~/client.json
     gmailscan-auth --push                        # copy local tokens into AWS
 
-``--status`` is the one to reach for first. It refreshes nothing and grants
-nothing; it reports which mailboxes have a token and whether that token still
-works, which is the question behind almost every "why did the sweep find
-nothing" investigation.
+``--status`` refreshes each token to find out whether the grant still works.
+It grants nothing.
 
-**On a headless box, use ``--manual``.** There is no local listener and no port
-forward: the browser's redirect fails to load, but its address bar still carries
-``?code=...``, and pasting that whole URL back completes the exchange. It must
-go into *this* process -- the PKCE verifier lives on the flow object and is
-never sent to Google, so a second run cannot finish the first run's consent.
+On a headless box use ``--manual``: the browser's redirect fails to load, but
+the address bar still carries ``?code=...``, and pasting that URL back
+completes the exchange. It has to go into the same process, because the PKCE
+verifier lives on the flow object and is not sent to Google.
 
 The grant is ``gmail.readonly``. It cannot send, modify, label or delete mail.
 """
@@ -49,13 +43,9 @@ GRANTED_SUFFIX = ".granted"
 def _granted_marker(path: Path) -> Path:
     """Sidecar recording when a grant was made.
 
-    Not the token's mtime: ``persist_token`` rewrites the file on every access
-    token refresh, so mtime measures the last refresh and resets to today the
-    moment anything reads the mailbox. It would report "granted 0d ago" forever,
-    which is exactly the number you need to be right about.
-
-    Not a key inside the token JSON either: ``Credentials.to_json()`` serializes
-    only the fields it knows, so an extra key is dropped on the first refresh.
+    The token's mtime will not do: ``persist_token`` rewrites the file on every
+    access-token refresh. Nor will a key inside the token JSON:
+    ``Credentials.to_json()`` drops keys it does not know on the first refresh.
     """
     return path.with_suffix(path.suffix + GRANTED_SUFFIX)
 
@@ -67,16 +57,13 @@ def _record_grant(path: Path) -> None:
 
 
 def _granted_age(path: Path) -> str:
-    """How old this grant is, which is the number that actually matters.
+    """How old this grant is, from the sidecar.
 
-    The credential's ``expiry`` is the *access* token -- about an hour out and
-    refreshed automatically on every use. Printing it next to OK invites the
-    reading that a grant is about to lapse when nothing is wrong.
-
-    What can lapse is the refresh token, and its lifetime appears nowhere in the
-    file. With the consent screen in Testing, Google kills it 7 days after
-    consent; published to Production it lives until revoked. So report the age
-    of the grant and let the 7-day mark speak for itself.
+    The credential's ``expiry`` is the access token's, an hour out and renewed
+    on use, so it says nothing about the grant. What lapses is the refresh
+    token: 7 days after consent while the consent screen is in Testing, and
+    only on revocation once the app is published. The age is the number to
+    watch.
     """
     marker = _granted_marker(path)
     try:
@@ -92,8 +79,8 @@ def _status() -> int:
     """Report every authorized mailbox and whether its grant still works.
 
     The verdict is :func:`gmailscan.auth.health_detail`'s, the same one a
-    consumer's status screen gets, so the two cannot disagree about a mailbox.
-    Exit status is non-zero unless every grant is ok.
+    consumer's status screen gets. Exit status is non-zero unless every grant
+    is ok.
     """
     accounts = authorized_accounts()
     print(f"token directory: {token_dir()}")
@@ -146,9 +133,8 @@ def _manual_consent(flow: Any, port: int) -> Any:
     """Consent without a local redirect server, for a headless box."""
     # The redirect is plain http on loopback; oauthlib refuses that by default.
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
-    # Google may return a broader scope set than was requested. That is a
-    # Google-side normalization, not a privilege escalation, and refusing it
-    # only breaks the flow.
+    # Google may return a broader scope set than requested; without this
+    # oauthlib refuses the token for it.
     os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
     flow.redirect_uri = f"http://localhost:{port}/"
@@ -174,7 +160,7 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
             "  gmailscan-auth --account "
             f"{account} --client-secret-file ~/client.json\n\n"
             "One-time Google Cloud setup:\n"
-            "  1. https://console.cloud.google.com -- create a project.\n"
+            "  1. https://console.cloud.google.com: create a project.\n"
             "  2. Enable the Gmail API.\n"
             "  3. OAuth consent screen: External, then PUBLISH THE APP TO PRODUCTION.\n"
             "     Left in Testing, Google expires refresh tokens after 7 days and the\n"
@@ -212,9 +198,7 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
     persist_token(path, creds.to_json())
     _record_grant(path)
     print(f"\nAuthorized {account}; token written to {path}")
-    # Re-authorizing is two steps for anything unattended, and the second is
-    # the one that gets skipped: the laptop looks fine while the scheduled job
-    # keeps hydrating the dead grant from the secret.
+    # The push is the step that gets forgotten after a re-consent.
     print(
         "If a Lambda or scheduled container uses this grant, push it too:\n"
         f"  gmailscan-auth --push --account {account}"
@@ -223,9 +207,8 @@ def _authorize(account: str, args: argparse.Namespace) -> int:
 
 
 def _push(args: argparse.Namespace) -> int:
-    # boto3 is imported lazily inside gmailscan.secrets, so this import cannot
-    # fail for want of the extra; a missing boto3 arrives as GmailAuthRequired
-    # below, with the install command in the message.
+    # gmailscan.secrets imports boto3 lazily; a missing boto3 arrives as
+    # GmailAuthRequired below, with the install command in the message.
     from .secrets import push_tokens
 
     try:

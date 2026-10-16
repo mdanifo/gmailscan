@@ -16,5 +16,5 @@ venv/
 .coverage
 htmlcov/
 
-# Secrets — never commit
+# Secrets
 *.key
