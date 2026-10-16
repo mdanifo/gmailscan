@@ -18,3 +18,10 @@ htmlcov/
 
 # Secrets
 *.key
+
+# Never commit credentials or local secrets
+.env
+.env.*
+token-*.json
+credentials*.json
+*.pem
