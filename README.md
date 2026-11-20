@@ -90,7 +90,8 @@ for msg in search_all("subject:interview", accounts=["you@gmail.com"]):
 `html_first` (order tables); each falls back to the other part. `received` is
 Gmail's `internalDate` as a UTC `datetime` and is the field to sort or window
 by; `date` is the raw `Date` header. `received` is `None` on a hand-built
-fixture.
+fixture. `get_thread()` skips unsent `DRAFT` messages by default; pass
+`include_drafts=True` to include them.
 
 ### Is the grant alive?
 

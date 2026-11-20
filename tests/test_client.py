@@ -784,6 +784,38 @@ def test_an_empty_thread_id_reads_nothing_rather_than_asking_gmail():
     assert GmailClient("a@gmail.com", service=_Explodes()).get_thread("") == []
 
 
+def test_get_thread_skips_drafts_by_default_and_can_include_them():
+    """Gmail's threads.get returns unsent DRAFT messages (including discarded
+    ['DRAFT', 'TRASH'] drafts) alongside sent and received mail."""
+    thread_payload = {
+        "id": "t1",
+        "messages": [
+            {**_payload("m1"), "labelIds": ["INBOX"]},
+            {**_payload("m2"), "labelIds": ["DRAFT"]},
+            {**_payload("m3"), "labelIds": ["SENT"]},
+            {**_payload("m4"), "labelIds": ["DRAFT", "TRASH"]},
+            _payload("m5"),  # no labelIds key
+        ],
+    }
+
+    class _Threads:
+        def get(self, *, userId, id, format):  # noqa: A002 - mirrors the Google signature
+            return _FakeExec(thread_payload)
+
+    service = _FakeService([])
+    service.threads = lambda: _Threads()
+    client = GmailClient("a@gmail.com", service=service)
+
+    assert [m.id for m in client.get_thread("t1")] == ["m1", "m3", "m5"]
+    assert [m.id for m in client.get_thread("t1", include_drafts=True)] == [
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+        "m5",
+    ]
+
+
 # ------------------------------------------- listing without reading, skipping
 
 

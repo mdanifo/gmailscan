@@ -241,8 +241,14 @@ class GmailClient:
         payload: dict[str, Any] = _with_backoff(request)
         return payload
 
-    def get_thread(self, thread_id: str) -> list[EmailMessage]:
-        """Every message in a thread, oldest first as Gmail returns them."""
+    def get_thread(self, thread_id: str, *, include_drafts: bool = False) -> list[EmailMessage]:
+        """Every message in a thread, oldest first as Gmail returns them.
+
+        Gmail's ``threads.get`` includes unsent ``DRAFT`` messages in the thread
+        payload (including discarded drafts labelled ``DRAFT`` and ``TRASH``).
+        They are skipped by default so a saved draft is not mistaken for a sent
+        message; pass ``include_drafts=True`` to include them.
+        """
         if not thread_id:
             return []
         payload = _with_backoff(
@@ -251,6 +257,7 @@ class GmailClient:
         return [
             decode_message(message, account=self.account)
             for message in payload.get("messages") or []
+            if include_drafts or "DRAFT" not in (message.get("labelIds") or ())
         ]
 
     def raw(self, message_id: str) -> bytes:
