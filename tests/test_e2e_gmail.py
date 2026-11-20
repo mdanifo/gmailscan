@@ -103,6 +103,31 @@ def test_get_thread_and_raw_go_through_the_same_retry(mailbox, monkeypatch):
     assert b"Subject: Interview" in client.raw("m1")
 
 
+def test_get_thread_excludes_unsent_drafts_by_default(mailbox):
+    mailbox.add(
+        {
+            **message_payload(
+                "m-draft", thread="t1", subject="Re: Interview", sender="a@gmail.com"
+            ),
+            "labelIds": ["DRAFT"],
+        },
+        {
+            **message_payload(
+                "m-trashed-draft", thread="t1", subject="Re: Interview", sender="a@gmail.com"
+            ),
+            "labelIds": ["DRAFT", "TRASH"],
+        },
+    )
+    client = GmailClient("a@gmail.com")
+    assert [m.id for m in client.get_thread("t1")] == ["m1", "m2"]
+    assert [m.id for m in client.get_thread("t1", include_drafts=True)] == [
+        "m1",
+        "m2",
+        "m-draft",
+        "m-trashed-draft",
+    ]
+
+
 def test_a_revoked_grant_is_reported_as_such_and_does_not_blind_the_other_mailbox(
     mailbox, tmp_path, caplog
 ):
