@@ -9,8 +9,8 @@ consent command.
 There is no PyPI package. Pin a release wheel, or a tag:
 
 ```bash
-pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.5.0/gmailscan-0.5.0-py3-none-any.whl"
-pip install "gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.5.0"
+pip install "gmailscan @ https://github.com/mdanifo/gmailscan/releases/download/v0.6.0/gmailscan-0.6.0-py3-none-any.whl"
+pip install "gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.6.0"
 ```
 
 The wheel installs into a `python:slim` image without git. Read
@@ -27,7 +27,7 @@ Extras:
 
 A project that only reads mail needs neither extra.
 
-Each client logs one line when built, `gmailscan 0.5.0 reading <address>`, so
+Each client logs one line when built, `gmailscan 0.6.0 reading <address>`, so
 a consumer's own logs say which release it runs. To catch an environment that
 is not running the pin, add this to the consumer's suite, pointed at whichever
 file holds the pin:

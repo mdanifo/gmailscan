@@ -2,7 +2,28 @@
 
 One entry per release: what it fixes, what it adds, what it breaks.
 
-Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.5.0`.
+Pin a tag: `gmailscan @ git+https://github.com/mdanifo/gmailscan@v0.6.0`.
+
+## v0.6.0 (2026-11-20)
+
+**Take this if you read threads to tell whether the owner replied.**
+
+Fixes
+
+- `get_thread()` skips unsent drafts: any message labelled `DRAFT`,
+  including discarded drafts labelled `DRAFT` and `TRASH`. Gmail's
+  `threads.get` returns them with the sent and received mail, and a draft
+  carries the owner's `From`, so a caller splitting the thread by sender
+  counted a saved draft as a sent reply.
+
+Adds
+
+- `get_thread(include_drafts=True)` returns the drafts as before.
+
+Breaks
+
+- `get_thread()` returns fewer messages for a thread holding a draft. A caller
+  that wanted the drafts passes `include_drafts=True`. No known consumer does.
 
 ## v0.5.0 (2026-10-12)
 
